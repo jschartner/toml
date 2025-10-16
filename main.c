@@ -217,6 +217,28 @@ b8 object_set(Value *object, str key, Value v) {
 
 }
 
+
+Value object_get(Value *object, str key) {
+    if(object->kind != KIND_OBJECT) todo();
+
+    Object *o = &object->as.object;
+    if(o->len == 0) todo();
+
+    u64 index = djb2(DJB2_START, key.data, key.len) % o->cap;
+
+    while(1) {
+        if(o->data[index].key.len == OBJECT_KEY_LEN_INVALID) {
+            todo();
+        } else {
+            if(str_eq(key, o->data[index].key)) {
+                return o->data[index].value;
+            } else {
+                index = (index + 1) % o->cap;
+            }
+        }
+    }
+}
+
 b8 object_next(Value *object, u64 *index, Entry **entry) {
     if(object->kind != KIND_OBJECT) todo();
 
@@ -326,14 +348,14 @@ typedef struct {
 
 #define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1 } }
 
-Reader reader_from_file(char *filepath) {
+Reader reader_from_file(u8 *name, u64 name_len) {
 
     u16 path[MAX_PATH];
     s32 n = MultiByteToWideChar(
             CP_UTF8,
             0,
-            (char *) filepath,
-            (s32) strlen(filepath),
+            (char *) name,
+            (s32) name_len,
             path,
             MAX_PATH);
     if(n == 0) {
@@ -373,6 +395,9 @@ Reader reader_from_file(char *filepath) {
         },
     };
 }
+#define reader_from_filec(cstr) reader_from_file((cstr), strlen(cstr))
+#define reader_from_filed(cstr) reader_from_file((cstr), sizeof(cstr) - 1)
+#define reader_from_files(s) reader_from_file((s).data, (s).len)
 
 b8 reader_peek_u8(Reader *r, u8 *b) {
     switch(r->kind) {
@@ -925,35 +950,35 @@ b8 reader_read_toml_value(Reader *r, Value *v) {
     
     *v = value_object();
 
+    
+
     return 1;
 
 }
 
 int main(void) {
-    Value value;
+    Value tests;
+    Reader reader = reader_from_filed("config.json");
+    if(!reader_read_json_value(&reader, &tests)) {
+        todo();
+    }
+    if(tests.kind != KIND_ARRAY) todo();
+    
+    for(u64 i=0;i<array_len(&tests);i++) {
+        Value test = array_get(&tests, i);
+        if(test.kind != KIND_OBJECT) todo();
 
-    Reader json_reader = reader_from_memoryd(__TEXT__(
-        {
-            "key": "value",
-            "another": "# This is not a comment"
+        Value toml = object_get(&test, str_fromd("toml"));
+        Value json = object_get(&test, str_fromd("json"));
+    
+        if(toml.kind != KIND_STR) todo();
+
+        reader = reader_from_files(toml.as.string);
+        Value toml_value;
+        if(!reader_read_toml_value(&reader, &toml_value)) {
+            todo();
         }
-    ));
-    if(!reader_read_json_value(&json_reader, &value)) {
-        todo();
     }
-    value_print(value); printf("\n");
-
-
-    Reader toml_reader = reader_from_memoryd(
-        "# This is a full-line comment"
-        "key = \"value\"  # This is a comment at the end of a line"
-        "another = \"# This is not a comment\""
-    );
-    if(!reader_read_toml_value(&toml_reader, &value)) {
-        todo();
-    }
-    value_print(value); printf("\n");
-
 
     return 0;
 }
