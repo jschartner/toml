@@ -40,11 +40,26 @@ typedef struct {
 
 #define str_fmt "%.*s"
 #define str_arg(s) (s32) (s).len, (s).data
-#define str_from(d, l) (str) { (d), (l) }
-#define str_fromd(cstr) (str) { (cstr), sizeof(cstr) - 1 }
+#define str_from(d, l) { (d), (l) }
+#define str_fromd(cstr) { (cstr), sizeof(cstr) - 1 }
 
 b8 str_eq(str a, str b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
+}
+
+b8 str_index_of(str a, str b, u64 *index) {
+    for(u64 i=0;i<a.len;i++) {
+        str s = str_from(a.data + i, a.len - i);
+        if(b.len < s.len) {
+            s.len = b.len;
+        }
+        if(str_eq(s, b)) {
+            i = *index;
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 typedef struct {
@@ -218,7 +233,7 @@ b8 object_set(Value *object, str key, Value v) {
 }
 
 
-Value object_get(Value *object, str key) {
+b8 object_get(Value *object, str key, Value *v) {
     if(object->kind != KIND_OBJECT) todo();
 
     Object *o = &object->as.object;
@@ -228,15 +243,18 @@ Value object_get(Value *object, str key) {
 
     while(1) {
         if(o->data[index].key.len == OBJECT_KEY_LEN_INVALID) {
-            todo();
+            return 0;
         } else {
             if(str_eq(key, o->data[index].key)) {
-                return o->data[index].value;
+                *v = o->data[index].value;
+                return 1; 
             } else {
                 index = (index + 1) % o->cap;
             }
         }
     }
+
+    todo();
 }
 
 b8 object_next(Value *object, u64 *index, Entry **entry) {
@@ -285,6 +303,49 @@ Value value_boolean(b8 b) {
         .kind = KIND_BOOL,
         .as.boolean = b,
     };
+}
+
+b8 value_eq(Value a, Value b) {
+    if(a.kind != b.kind) {
+        return 0;
+    }
+    Kind kind = a.kind;
+
+    switch(kind) {
+        case KIND_NULL: todo();
+        case KIND_BOOL: todo();
+        case KIND_NUMBER: todo(); 
+        case KIND_STR: {
+            return str_eq(a.as.string, b.as.string);
+        } break;
+        case KIND_ARRAY: todo();
+        case KIND_OBJECT: {
+
+            u64 index;
+            Entry *entry;
+
+            // a in b
+            index = U64_MAX;
+            while(object_next(&a, &index, &entry)) {
+                Value value;
+                if(!object_get(&b, entry->key, &value)) return 0;
+                if(!value_eq(entry->value, value)) return 0;
+            }
+
+            // b in a
+            index = U64_MAX;
+            while(object_next(&b, &index, &entry)) {
+                Value value;
+                if(!object_get(&a, entry->key, &value)) return 0;
+                if(!value_eq(entry->value, value)) return 0;
+            }
+
+            return 1;
+
+        } break;
+    }
+
+    todo();
 }
 
 void value_print(Value v) {
@@ -344,9 +405,10 @@ typedef struct {
         Memory memory;
         File file;
     } as;
+    u64 off;
 } Reader;
 
-#define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1 } }
+#define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1, .pos = 0} }
 
 Reader reader_from_file(u8 *name, u64 name_len) {
 
@@ -393,6 +455,7 @@ Reader reader_from_file(u8 *name, u64 name_len) {
             .buf_pos = 0,
             .buf_len = 0,
         },
+        .off = 0,
     };
 }
 #define reader_from_filec(cstr) reader_from_file((cstr), strlen(cstr))
@@ -447,6 +510,7 @@ b8 reader_read_u8(Reader *r, u8 *b) {
                 *b = m->data[0];
                 m->data += 1;
                 m->len  -= 1;
+                r->off += 1;
                 return 1;
             } else {
                 return 0;
@@ -472,6 +536,7 @@ b8 reader_read_u8(Reader *r, u8 *b) {
             }
     
             *b = f->buf[f->buf_pos++];
+            r->off += 1;
             return 1;
 
         } break;
@@ -510,10 +575,10 @@ b8 reader_expect_str(Reader *r, str s) {
 
     return i == s.len;
 }
-#define reader_expect_strd(r, cstr) reader_expect_str((r), str_fromd(cstr))
+#define reader_expect_strd(r, cstr) reader_expect_str((r), (str) str_fromd(cstr))
 
-u8 whitespace[] = { ' ', '\n', '\r', '\t' };
-u64 whitespace_len = sizeof(whitespace) / sizeof(*whitespace);
+u8 json_whitespace[] = { ' ', '\n', '\r', '\t' };
+u64 json_whitespace_len = sizeof(json_whitespace) / sizeof(*json_whitespace);
 
 void rune_encode(u32 rune, u8s *bs) {
     if(rune <= 0x7f) {
@@ -547,7 +612,7 @@ void rune_encode(u32 rune, u8s *bs) {
 b8 reader_read_json_string(Reader *r, str *s) {
 
     u8 b;
-    if(!reader_read_u8(r, &b)) {
+    if(!reader_read_u8(r, &b) || b != '\"') {
         todo();
     }
 
@@ -565,6 +630,7 @@ b8 reader_read_json_string(Reader *r, str *s) {
             switch(b) {
                 case '/': da_append(&bs, '/'); break;
                 case '\\': da_append(&bs, '\\'); break;
+                case '"': da_append(&bs, '\"'); break;
                 case 'b': da_append(&bs, '\b'); break;
                 case 'f': da_append(&bs, '\f'); break;
                 case 'n': da_append(&bs, '\n'); break;
@@ -592,14 +658,14 @@ b8 reader_read_json_string(Reader *r, str *s) {
                     rune_encode(n, &bs);
                 } break;
                 default:
-                          return 0;
+                  return 0;
             }
         } else {
             da_append(&bs, b);
         }
     }
 
-    *s = str_from(bs.data, bs.len);
+    *s = (str) str_from(bs.data, bs.len);
     return 1;
 }
 
@@ -770,7 +836,7 @@ b8 reader_read_json_object(Reader *r, Value *object) {
     }
 
     while(1) {
-        reader_skip_any(r, whitespace, whitespace_len);
+        reader_skip_any(r, json_whitespace, json_whitespace_len);
 
         if(!reader_peek_u8(r, &b)) {
             todo();
@@ -789,13 +855,13 @@ b8 reader_read_json_object(Reader *r, Value *object) {
                 return 0;
             }
 
-            reader_skip_any(r, whitespace, whitespace_len);
+            reader_skip_any(r, json_whitespace, json_whitespace_len);
 
             if(!reader_read_u8(r, &b) || b != ':') {
                 return 0;
             }
 
-            reader_skip_any(r, whitespace, whitespace_len);
+            reader_skip_any(r, json_whitespace, json_whitespace_len);
 
             Value v;
             if(!reader_read_json_value(r, &v)) {
@@ -803,7 +869,7 @@ b8 reader_read_json_object(Reader *r, Value *object) {
                 return 0;
             }
 
-            reader_skip_any(r, whitespace, whitespace_len);
+            reader_skip_any(r, json_whitespace, json_whitespace_len);
 
             object_set(object, key, v);
 
@@ -835,7 +901,7 @@ b8 reader_read_json_array(Reader *r, Value *array) {
     }
 
     while(1) {
-        reader_skip_any(r, whitespace, whitespace_len);
+        reader_skip_any(r, json_whitespace, json_whitespace_len);
 
         if(!reader_peek_u8(r, &b)) {
             return 0;
@@ -853,7 +919,7 @@ b8 reader_read_json_array(Reader *r, Value *array) {
             }
 
             array_append(array, v);
-            reader_skip_any(r, whitespace, whitespace_len);
+            reader_skip_any(r, json_whitespace, json_whitespace_len);
 
             if(!reader_read_u8(r, &b)) {
                 return 0;
@@ -875,7 +941,7 @@ b8 reader_read_json_array(Reader *r, Value *array) {
 
 b8 reader_read_json_value(Reader *r, Value *v) {
 
-    reader_skip_any(r, whitespace, whitespace_len);
+    reader_skip_any(r, json_whitespace, json_whitespace_len);
 
     u8 b;
     if(!reader_peek_u8(r, &b)) {
@@ -937,7 +1003,7 @@ b8 reader_read_json_value(Reader *r, Value *v) {
             default: {
                 printf("'%c' (0x%02x)\n", b, b);
                 todo();
-            }
+            } break;
         }
     }
 
@@ -946,11 +1012,250 @@ b8 reader_read_json_value(Reader *r, Value *v) {
     return 1;
 }
 
-b8 reader_read_toml_value(Reader *r, Value *v) {
+b8 reader_skip_until_including_any(Reader *r, str *s, u64 s_len) {
     
-    *v = value_object();
+    while(1) {
+        b8 found = 0;
+        for(u64 i=0;!found && i<s_len;i++) {
+            if(reader_expect_str(r, s[i])) {
+                found = 1;
+            }
+        }
+        if(found) {
+            break;
+        }
 
-    
+        u8 b;
+        if(reader_read_u8(r, &b)) {
+
+        } else {
+            return 0; 
+        }
+    }
+
+    return 1;
+}
+
+u8 toml_whitespace[] = { ' ', '\t' };
+u64 toml_whitespace_len = sizeof(toml_whitespace) / sizeof(*toml_whitespace);
+
+str toml_newlines[] = {
+    str_fromd("\r\n"),
+    str_fromd("\n"),
+};
+u64 toml_newlines_len = sizeof(toml_newlines)/sizeof(*toml_newlines);
+
+typedef enum {
+    TOML_KEY_MODE_NO_QOUTE,
+    TOML_KEY_MODE_SINGLE_QOUTE,
+    TOML_KEY_MODE_DOUBLE_QOUTE,
+} Toml_Key_Mode;
+
+typedef enum {
+    TOML_KEY_RETURN_DONE,
+    TOML_KEY_RETURN_DOT,
+    TOML_KEY_RETURN_ERROR,
+} Toml_Key_Return;
+
+Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_KeyMode *mode) {
+    // A-Za-z0-9_-
+
+    u8 b;
+    if(!reader_peek_u8(r, &b)) {
+        return TOML_KEY_RETURN_ERROR;
+    }
+
+    u64 off = r->off;
+
+    b8 running = 1;
+    u8s bs = {0};
+    while(running) {
+        switch(*mode) {
+            case TOML_KEY_MODE_NO_QOUTE: {
+                if(!reader_peek_u8(r, &b)) todo();
+                if( ('A' <= b && b <= 'Z') || 
+                        ('a' <= b && b <= 'z') || 
+                        ('0' <= b && b <= '9') || 
+                        b == '_' || b == '-') {
+                    if(!reader_read_u8(r, &b)) todo();
+                    da_append(&bs, b); 
+                } else if(b == '\'') {
+                    if(!reader_read_u8(r, &b)) todo();
+                    mode = TOML_KEY_MODE_SINGLE_QOUTE;
+                } else if(b == '\"') {
+                    if(!reader_read_u8(r, &b)) todo();
+                    mode = TOML_KEY_MODE_DOUBLE_QOUTE;
+                } else {
+                    running = 0;
+                }
+            } break;
+            case TOML_KEY_MODE_SINGLE_QOUTE: {
+                if(!reader_read_u8(r, &b)) todo();
+                if(b == '\'') {
+                    mode = TOML_KEY_MODE_NO_QOUTE;
+                } else {
+                    da_append(&bs, b); 
+                }
+            } break;
+            case TOML_KEY_MODE_DOUBLE_QOUTE: {
+                if(!reader_read_u8(r, &b)) todo();
+                if(b == '\"') {
+                    mode = NO_QOUTES;
+                } else {
+                    da_append(&bs, b); 
+                }
+            } break;
+        }
+    }
+
+    if(r->off == off) {
+        return TOML_KEY_RETURN_ERROR;
+    }
+
+    *s = (str) str_from(bs.data, bs.len);
+    return TOML_KEY_RETURN_DONE;
+}
+
+b8 reader_read_toml_string(Reader *r, str *s) {
+
+    typedef enum {
+        SINGLE,
+        DOUBLE
+    } Mode;
+
+    u8 b;
+    if(!reader_read_u8(r, &b)) {
+        todo();
+        // return 0;
+    }
+    Mode mode;
+    if(b == '\'') mode = SINGLE;
+    else if(b == '\"') mode = DOUBLE;
+    else return 0;
+
+    u8s bs = {0};
+    b8 running = 1;
+    while(running) {
+        if(!reader_read_u8(r, &b)) {
+            return 0;
+        }
+        switch(mode) {
+            case SINGLE: {
+                if(b == '\'') {
+                    running = 0;
+                } else {
+                    da_append(&bs, b);
+                }
+            } break;
+            case DOUBLE: {
+                if(b == '\"') {
+                    running = 0;
+                } else {
+                    da_append(&bs, b);
+                }
+            } break;
+        }
+
+    }
+
+    *s = (str) str_from(bs.data, bs.len);
+    return 1;
+}
+
+b8 reader_read_toml_value(Reader *r, Value *v) {
+
+    u8 b;
+    if(!reader_peek_u8(r, &b)) {
+        return 0;
+    }
+    switch(b) {
+        case '\"': 
+        case '\'':
+            {
+                str s;
+                if(!reader_read_toml_string(r, &s)) {
+                    return 0;
+                }
+
+                *v = value_str(s);
+            } break;
+        case '#': {
+            return 0;
+        } break;
+        case 'f': {
+            if(!reader_expect_strd(r, "false")) {
+                return 0;
+            }
+            *v = value_boolean(0);
+        } break;
+        case 't': {
+            if(!reader_expect_strd(r, "true")) {
+                return 0;
+            }
+            *v = value_boolean(1);
+        } break;
+        default: {
+            printf("'%c' (0x%02x)\n", b, b);
+            todo();
+        } break;
+    }
+
+    return 1;
+
+}
+
+b8 reader_read_toml_file(Reader *r, Value *object) {
+    if(object->kind != KIND_OBJECT) todo();
+
+    while(1) {
+        reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+
+        u8 b;
+        if(!reader_peek_u8(r, &b)) {
+            break;
+        }
+        switch(b) {
+            case '\r': {
+                if(!reader_read_u8(r, &b)) return 0;
+                if(!reader_read_u8(r, &b) || b != '\n') return 0;
+            } break;
+            case '\n': {
+                if(!reader_read_u8(r, &b)) return 0;
+            } break;
+            case '#': {
+                if(!reader_read_u8(r, &b)) return 0;
+                if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
+            } break;
+            default: {
+                str key;
+                if(!reader_read_toml_key(r, &key)) {
+                    return 0;
+                }
+
+                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+                if(!reader_read_u8(r, &b) || b != '=') return 0;
+                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+
+                Value value;
+                if(!reader_read_toml_value(r, &value)) {
+                    return 0;
+                }
+
+                object_set(object, key, value);
+
+                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+                if(!reader_peek_u8(r, &b)) todo();
+                if(b == '#' || b == '\r' || b == '\n') {
+                    if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
+                } else {
+                    return 0;
+                }
+
+            } break;
+        }
+
+    }
+
 
     return 1;
 
@@ -963,20 +1268,46 @@ int main(void) {
         todo();
     }
     if(tests.kind != KIND_ARRAY) todo();
-    
+
     for(u64 i=0;i<array_len(&tests);i++) {
         Value test = array_get(&tests, i);
         if(test.kind != KIND_OBJECT) todo();
 
-        Value toml = object_get(&test, str_fromd("toml"));
-        Value json = object_get(&test, str_fromd("json"));
-    
+        Value toml;
+        if(!object_get(&test, (str) str_fromd("toml"), &toml)) todo();
+        Value json;
+        if(!object_get(&test, (str) str_fromd("json"), &json)) todo();
+
         if(toml.kind != KIND_STR) todo();
 
-        reader = reader_from_files(toml.as.string);
-        Value toml_value;
-        if(!reader_read_toml_value(&reader, &toml_value)) {
-            todo();
+        Reader toml_reader = reader_from_files(toml.as.string);
+        Value toml_value = value_object();
+        b8 read_toml = reader_read_toml_file(&toml_reader, &toml_value);
+
+        if(json.kind == KIND_NULL) {
+            if(read_toml) {
+                fprintf(stderr, str_fmt":%llu:ERROR: Could read toml although, it should be invalid\n", str_arg(toml.as.string), toml_reader.off);
+                todo();
+            } else {
+                // fine
+            }
+        } else {
+            if(read_toml) {
+                if(json.kind != KIND_STR) todo();
+                reader = reader_from_files(json.as.string);
+                Value json_value;
+                if(!reader_read_json_value(&reader, &json_value)) {
+                    todo();
+                }
+
+                if(!value_eq(toml_value, json_value)) {
+                    todo();
+                }
+
+            } else {
+                fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml.as.string), toml_reader.off);
+                todo();
+            }
         }
     }
 

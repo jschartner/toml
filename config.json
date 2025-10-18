@@ -1,6 +1,47 @@
 [
+
+    {
+        "toml": "empty.toml",
+        "json": "empty.json"
+    },
     {
         "toml": "comments.toml",
         "json": "comments.json"
+    },
+    {
+        "toml": "key_value.toml",
+        "json": "key_value.json"
+    },
+    {
+        "toml": "unspecified_value.toml",
+        "json": null
+    },
+    {
+        "toml": "there_must_be_newline_after_key_value.toml",
+        "json": null
+    },
+    {
+        "toml": "keys.toml",
+        "json": "keys.json"
+    },
+    {
+        "toml": "qouted_keys.toml",
+        "json": "qouted_keys.json"
+    },
+    {
+        "toml": "key_must_be_non_empty.toml",
+        "json": null
+    },
+    {
+        "toml": "empty_key_name_double_qoutes.toml",
+        "json": "empty_key_name.json"
+    },
+    {
+        "toml": "empty_key_name_single_qoutes.toml",
+        "json": "empty_key_name.json"
+    },
+    {
+        "toml": "dotted_keys.toml",
+        "json": "dotted_keys.json"
     }
 ]
