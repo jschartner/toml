@@ -1,0 +1,8 @@
+[a.b.c]            # this is best practice
+foo=1
+[ d.e.f ]          # same as [d.e.f]
+foo=1
+[ g .  h  . i ]    # same as [g.h.i]
+foo=1
+[ j . "ʞ" . 'l' ]  # same as [j."ʞ".'l']
+foo=1

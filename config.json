@@ -158,6 +158,105 @@
     {
         "toml": "booleans.toml",
         "json": "booleans.json"
-    }
-
+    },
+	{
+		"toml": "offset_date_time.toml"
+	},
+	{
+		"toml": "locale_date_time.toml"
+	},
+	{
+		"toml": "locale_date.toml",
+	},
+	{
+		"toml": "locale_time.toml",
+	},
+	{
+		"toml": "arrays.toml",
+		"json": "arrays.json"
+	},
+	{
+		"toml": "trailing_comma.toml",
+		"json": "trailing_comma.json"
+	},
+	{
+		"toml": "tables.toml",
+		"json": "tables.json"
+	},
+	{
+		"toml": "dotted_key_table.toml",
+		"json": "dotted_key_table.json",
+	},
+	{
+		"toml": "whitespace_in_dotted_key_table.toml",
+		"json": "whitespace_in_dotted_key_table.json"
+	}, 
+	{
+		"toml": "super_tables.toml",
+		"json": "super_tables.json"
+	},
+	{
+		"toml": "table_more_than_once.toml",
+		"json": null
+	},
+	{
+		"toml": "table_after_key_syntax.toml",
+		"json": null
+	},
+	{
+		"toml": "root_table.toml",
+		"json": "root_table.json"
+	},
+	{
+		"toml": "dotted_keys_and_tables.toml",
+		"json": "dotted_keys_and_tables.json"
+	},
+	{
+		"toml": "subtables.toml",
+		"json": "subtables.json"
+	},
+	{
+		"toml": "inline_tables.toml",
+		"json": "inline_tables.json"
+	},
+	{
+		"toml": "inline_tables_outside.toml",
+		"json": "inline_tables_outside.json"
+	},
+	{
+		"toml": "invalid_inline_tables_outside.toml",
+		"json": null
+	},
+	{
+		"toml": "invalid_inline_tables_outside2.toml",
+		"json": null
+	},
+	{
+		"toml": "arrays_of_tables.toml",
+		"json": "arrays_of_tables.json"
+	},
+	{
+		"toml": "complex_arrays_of_tables.toml",
+		"json": "complex_arrays_of_tables.json"
+	},
+	{
+		"toml": "invalid_array_reference.toml",
+		"json": null
+	},
+	{
+		"toml": "static_array.toml",
+		"json": null
+	},
+	{
+		"toml": "redefine_as_table.toml",
+		"json": null,
+	},
+	{
+		"toml": "redefine_as_array.toml",
+		"json": null,
+	},
+	{
+		"toml": "points.toml",
+		"json": "points.json"
+	}
 ]

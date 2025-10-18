@@ -26,7 +26,7 @@ typedef double f64;
 
 #define __TEXT__(...) #__VA_ARGS__
 
-#define todo() do{ asm("int3"); fprintf(stderr, "%s:%d:TODO\n", __FILE__, __LINE__); exit(1); }while(0)
+#define todo() do{ fprintf(stderr, "%s:%d:TODO\n", __FILE__, __LINE__); exit(1); }while(0)
 
 #define da_reserve(xs, len) do {\
     u64 __FILE__##__LINE__##cap = (xs)->cap;\
@@ -91,7 +91,10 @@ typedef enum {
     KIND_NUMBER,
     KIND_STR,
     KIND_ARRAY,
-    KIND_OBJECT
+    KIND_OBJECT,
+	
+	KIND_ARRAY_FINAL,
+	KIND_OBJECT_FINAL,
 } Kind;
 
 typedef struct Value Value;
@@ -318,6 +321,38 @@ Value value_boolean(b8 b) {
     };
 }
 
+b8 value_backpatch_object_final(Value *value) {
+
+    switch(value->kind) {
+        case KIND_NULL: break;
+        case KIND_BOOL: break;
+        case KIND_NUMBER: break;
+        case KIND_STR: break;
+		case KIND_ARRAY_FINAL:
+        case KIND_ARRAY: {
+			value->kind = KIND_ARRAY;
+			for(u64 i=0;i<array_len(value);i++) {
+				value_backpatch_object_final(array_get(value, i));
+			}
+
+			return 1;
+		} break;
+		case KIND_OBJECT_FINAL:
+        case KIND_OBJECT: {
+			value->kind = KIND_OBJECT;
+
+            u64 index = U64_MAX;
+            Entry *entry;
+            while(object_next(value, &index, &entry)) {
+				value_backpatch_object_final(&entry->value);
+            }
+
+            return 1;
+
+        } break;
+    }
+}
+
 b8 value_eq(Value a, Value b) {
     if(a.kind != b.kind) {
         return 0;
@@ -335,7 +370,19 @@ b8 value_eq(Value a, Value b) {
         case KIND_STR: {
             return str_eq(a.as.string, b.as.string);
         } break;
-        case KIND_ARRAY: todo();
+        case KIND_ARRAY: {
+			if(array_len(&a) != array_len(&b)) {
+				return 0;
+			}
+
+			for(u64 i=0;i<array_len(&a);i++) {
+				if(!value_eq(*array_get(&a, i), *array_get(&b, i))) {
+					return 0;
+				}
+			}
+
+			return 1;
+		} break;
         case KIND_OBJECT: {
 
             u64 index;
@@ -430,7 +477,9 @@ typedef struct {
     u64 off;
 } Reader;
 
-#define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1, .pos = 0} }
+#define reader_from_memory(d, l) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (d), .len = (l), }, .off= 0 }
+#define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1, .off = 0} }
+
 
 Reader reader_from_file(u8 *name, u64 name_len) {
 
@@ -1506,166 +1555,467 @@ b8 reader_read_toml_string(Reader *r, str *s) {
     return 1;
 }
 
+b8 is_leap_year(u64 year) {
+	return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+}
+
+u64 days_in_month(u64 year, u64 month) {
+	switch(month) {
+	  case 1: return 31;
+      case 2: return is_leap_year(year) ? 29 : 28;
+      case 3: return 31;
+      case 4: return 30;
+      case 5: return 31;
+      case 6: return 30;
+      case 7: return 31;
+      case 8: return 31;
+      case 9: return 30;
+      case 10: return 31;
+      case 11: return 30;
+      case 12: return 31;
+	}
+}
+
+b8 reader_read_toml_offset_date_time(Reader *r, str *s, b8 start_with_time) {
+
+	typedef enum {
+		IDLE,
+		YEAR,
+		MONTH,
+		DAY,
+		HOUR,
+		MINUTE,
+		SECOND,
+		Z,
+		OFFSET_HOUR,
+		OFFSET_MINUTE,
+		SECOND_FRACTION,
+	} State;
+
+	State state = IDLE;
+	u64 index = 0;
+	u64 number = 0;
+
+	if(start_with_time) {
+		state = HOUR;
+	}
+
+	u64 year = 0;
+	u64 month = 0;
+
+	u8s bs = {0};
+
+	b8 done = 0;
+	while(!done) {
+		u8 b;
+		if(!reader_peek_u8(r, &b)) {
+			break;
+		}
+
+		switch(state) {
+			case IDLE: {
+				if('0' <= b && b <= '9') {
+					state = YEAR;
+					index = 1;
+					number = b - '0';
+				} else {
+					done = 1;
+				}
+			} break;
+			case YEAR: {
+				if(index == 4) {
+					if(b == '-') {
+						year = number;
+						state = MONTH;
+						index = 0;
+						number = 0;
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case MONTH: {
+				if(index == 2) {
+					if(b == '-') {
+						if(1 <= number && number <= 12) {
+							month = number;
+							state = DAY;
+							index = 0;
+							number = 0;
+						} else {
+							done = 1;
+						}
+
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case DAY: {
+				if(index == 2) {
+					if(b == 'T' || b == ' ') {
+						u64 days = days_in_month(year, month);
+						if(1 <= number && number <= days) {
+							state = HOUR;
+							index = 0;
+							number = 0;
+						} else {
+							done = 1;							
+						}
+
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case HOUR: {
+				if(index == 2) {
+					if(b == ':') {
+						if(0 <= number && number <= 23) {
+							state = MINUTE;
+							index = 0;
+							number = 0;
+						} else {
+							done = 1;
+						}
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case MINUTE: {
+				if(index == 2) {
+					if(b == ':') {
+						if(0 <= number && number <= 59) {
+							state = SECOND;
+							index = 0;
+							number = 0;
+						} else {
+							done = 1;
+						}
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case SECOND: {
+				if(index == 2) {
+					if(0 <= number && number <= 59) {
+						if(!start_with_time && b == 'Z') {
+							state = Z;
+							done = 1;
+						} else if(!start_with_time && (b == '-' || b == '+')) {
+							state = OFFSET_HOUR;
+							index = 0;
+							number = 0;
+						} else if(b == '.') {
+							state = SECOND_FRACTION;
+							index = 0;
+						} else {
+							done = 1;
+						}
+					} else {
+						done = 1;
+					}
+
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case OFFSET_HOUR: {
+				if(index == 2) {
+					if(b == ':') {
+						if(0 <= number && number <= 23) {
+							state = OFFSET_MINUTE;
+							index = 0;
+							number = 0;
+						} else {
+							done = 1;
+						}
+					} else {
+						done = 1;
+					}
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case OFFSET_MINUTE: {
+				if(index == 2) {
+					todo();
+				} else {
+					if('0' <= b && b <= '9') {
+						index += 1;
+						number *= 10;
+						number += b - '0';
+						if(index == 2) {
+							if(0 <= number  && number <= 59) {
+									
+							} else {
+								index = 0;
+							}
+							done = 1;
+						}
+					} else {
+						done = 1;
+					}
+				}
+			} break;
+			case SECOND_FRACTION: {
+				if(!start_with_time && (b == '-' || b == '+')) {
+					state = OFFSET_HOUR;
+					index = 0;
+					number = 0;
+				} else if('0' <= b && b <= '9') {
+					index += 1;
+				} else {
+					done = 1;
+				}
+			} break;
+			default: todo();
+		}
+
+		if(!reader_read_u8(r, &b)) {
+			todo();
+		}
+		da_append(&bs, b);
+	}
+
+	*s = (str) str_from(bs.data, bs.len);
+
+	switch(state) {
+		case IDLE:
+		case YEAR:
+		case MONTH:
+		case HOUR:
+			return 0;
+		case DAY:
+			return index == 2;
+		case SECOND:
+			return index == 2;
+		case Z:
+			return 1;
+		case OFFSET_MINUTE:
+			return index == 2;
+		case SECOND_FRACTION:
+			return 1;
+		default: 
+			todo();
+	}
+
+}
+
 b8 reader_read_toml_number(Reader *r, f64 *number) {
 
-    typedef enum {
-        IDLE,
-        AFTER_SIGN,
-        LEFT,
-        ZERO,
-        ZERO_START,
-        RIGHT,
-        EXPONENT_IDLE,
-        EXPONENT,
-        HEX,
-        OCTAL,
-        BINARY,
-    } State;
-    State state = IDLE;
+	typedef enum {
+		IDLE,
+		AFTER_SIGN,
+		LEFT,
+		ZERO,
+		ZERO_START,
+		RIGHT,
+		EXPONENT_IDLE,
+		EXPONENT,
+		HEX,
+		OCTAL,
+		BINARY,
+	} State;
+	State state = IDLE;
 
-    b8 prev_was_underscore = 0;
+	b8 prev_was_underscore = 0;
 
-    b8 negative = 0;
-    b8 exponent_negative = 0;
-    u64 left = 0;
-    u64 right = 0;
-    u64 right_count = 0;
-    u64 exponent = 1;
+	b8 negative = 0;
+	b8 exponent_negative = 0;
+	u64 left = 0;
+	u64 right = 0;
+	u64 right_count = 0;
+	u64 exponent = 1;
 
-    u64 off = r->off;
+	u64 off = r->off;
 
-    b8 done = 0;
-    while(!done) {
+	b8 done = 0;
+	while(!done) {
 
-        u8 b;
-        if(!reader_peek_u8(r, &b)) {
-            break;
-        }
+		u8 b;
+		if(!reader_peek_u8(r, &b)) {
+			break;
+		}
 
-        switch(state) {
-            case IDLE: {
-                if(b == '-') {
-                    negative = 1;
-                    state = AFTER_SIGN;
-                } else if(b == '+') {
-                    // negative = 0;
-                    state = AFTER_SIGN;
-                } else if(b == '0') {
-                    state = ZERO_START;
-                } else if('1' <= b && b <= '9') {
-                    left = b - '0';
-                    state = LEFT;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case ZERO: {
-                if(b == '.') {
-                    state = RIGHT;
-                } else if(b == 'e' || b == 'E') {
-                    state = EXPONENT_IDLE;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case ZERO_START: {
-                if(b == '.') {
-                    state = RIGHT;
-                } else if(b == 'e' || b == 'E') {
-                    state = EXPONENT_IDLE;
-                } else if(b == 'x') {
-                    state = HEX;
-                } else if(b == 'o') {
-                    state = OCTAL;
-                } else if(b == 'b') {
-                    state = BINARY;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case AFTER_SIGN: {
-                if(b == '0') {
-                    state = ZERO;
-                } else if('1' <= b && b <= '9') {
-                    left = b - '0';
-                    state = LEFT;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case LEFT: {
-                if(b == 'e' || b == 'E') {
-                    state = EXPONENT_IDLE;
-                } else if(b == '_') {
-                    if(prev_was_underscore) return 0;
-                } else if('0' <= b && b <= '9') {
-                    left *= 10;
-                    left += b - '0';
-                    // state = LEFT;
-                } else if(b == '.') {
-                    state = RIGHT;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case RIGHT: {
-                if(b == 'e' || b == 'E') {
-                    if(right_count == 0) return 0;
-                    state = EXPONENT_IDLE;
-                } else if(b == '_') {
-                    if(prev_was_underscore) return 0;
-                } else if('0' <= b && b <= '9') {
-                    right *= 10;
-                    right += b - '0';
-                    right_count += 1;
-                    // state = LEFT;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case EXPONENT_IDLE: {
-                if(b == '-') {
-                    exponent = 0;
-                    exponent_negative = 1;
-                    state = EXPONENT;
-                } else if(b == '+') {
-                    exponent = 0;
-                    state = EXPONENT;
-                } else if('0' <= b && b <= '9') {
-                    exponent = b - '0';
-                    state = EXPONENT;
-                } else {
-                    done = 1;
-                }
-            } break;
-            case EXPONENT: {
-                if('0' <= b && b <= '9') {
-                    exponent *= 10;
-                    exponent += b - '0';
-                    // state = EXPONENT;
-                } else {
-                    done = 1;
-                }
+		switch(state) {
+			case IDLE: {
+				if(b == '-') {
+					negative = 1;
+					state = AFTER_SIGN;
+				} else if(b == '+') {
+					// negative = 0;
+					state = AFTER_SIGN;
+				} else if(b == '0') {
+					state = ZERO_START;
+				} else if('1' <= b && b <= '9') {
+					left = b - '0';
+					state = LEFT;
+				} else {
+					done = 1;
+				}
+			} break;
+			case ZERO: {
+				if(b == '.') {
+					state = RIGHT;
+				} else if(b == 'e' || b == 'E') {
+					state = EXPONENT_IDLE;
+				} else {
+					done = 1;
+				}
+			} break;
+			case ZERO_START: {
+				if(b == '.') {
+					state = RIGHT;
+				} else if(b == 'e' || b == 'E') {
+					state = EXPONENT_IDLE;
+				} else if(b == 'x') {
+					state = HEX;
+				} else if(b == 'o') {
+					state = OCTAL;
+				} else if(b == 'b') {
+					state = BINARY;
+				} else {
+					done = 1;
+				}
+			} break;
+			case AFTER_SIGN: {
+				if(b == '0') {
+					state = ZERO;
+				} else if('1' <= b && b <= '9') {
+					left = b - '0';
+					state = LEFT;
+				} else {
+					done = 1;
+				}
+			} break;
+			case LEFT: {
+				if(b == 'e' || b == 'E') {
+					state = EXPONENT_IDLE;
+				} else if(b == '_') {
+					if(prev_was_underscore) return 0;
+				} else if('0' <= b && b <= '9') {
+					left *= 10;
+					left += b - '0';
+					// state = LEFT;
+				} else if(b == '.') {
+					state = RIGHT;
+				} else {
+					done = 1;
+				}
+			} break;
+			case RIGHT: {
+				if(b == 'e' || b == 'E') {
+					if(right_count == 0) return 0;
+					state = EXPONENT_IDLE;
+				} else if(b == '_') {
+					if(prev_was_underscore) return 0;
+				} else if('0' <= b && b <= '9') {
+					right *= 10;
+					right += b - '0';
+					right_count += 1;
+					// state = LEFT;
+				} else {
+					done = 1;
+				}
+			} break;
+			case EXPONENT_IDLE: {
+				if(b == '-') {
+					exponent = 0;
+					exponent_negative = 1;
+					state = EXPONENT;
+				} else if(b == '+') {
+					exponent = 0;
+					state = EXPONENT;
+				} else if('0' <= b && b <= '9') {
+					exponent = b - '0';
+					state = EXPONENT;
+				} else {
+					done = 1;
+				}
+			} break;
+			case EXPONENT: {
+				if('0' <= b && b <= '9') {
+					exponent *= 10;
+					exponent += b - '0';
+					// state = EXPONENT;
+				} else {
+					done = 1;
+				}
 
-            } break;
-            case HEX: {
-                if(b == '_') {
-                    if(off + 2 == r->off) return 0;
-                    if(prev_was_underscore) return 0;
-                } else if('0' <= b && b <= '9') {
-                    left *= 16;
-                    left += b - '0';
-                } else if('a' <= b && b <= 'f') {
-                    left *= 16;
-                    left += b - 'W';
-                } else if('A' <= b && b <= 'F') {
-                    left *= 16;
-                    left += b - '7';
-                } else {
-                    done = 1;
-                }
-            } break;
-            case OCTAL: {
+			} break;
+			case HEX: {
+				if(b == '_') {
+					if(off + 2 == r->off) return 0;
+					if(prev_was_underscore) return 0;
+				} else if('0' <= b && b <= '9') {
+					left *= 16;
+					left += b - '0';
+					} else if('a' <= b && b <= 'f') {
+					left *= 16;
+					left += b - 'W';
+				} else if('A' <= b && b <= 'F') {
+					left *= 16;
+					left += b - '7';
+				} else {
+					done = 1;
+				}
+			} break;
+			case OCTAL: {
                 if(b == '_') {
                     if(off + 2 == r->off) return 0;
                     if(prev_was_underscore) return 0;
@@ -1742,246 +2092,595 @@ b8 reader_read_toml_number(Reader *r, f64 *number) {
     }
 }
 
-b8 reader_read_toml_value(Reader *r, Value *v) {
+b8 reader_read_toml_value(Reader *r, Value *v);
+
+b8 reader_read_toml_array(Reader *r, Value *array) {
 
     u8 b;
-    if(!reader_peek_u8(r, &b)) {
+    if(!reader_read_u8(r, &b) || b != '[') {
         return 0;
     }
-    if('0' <= b && b <= '9') {
-        f64 n;
-        if(!reader_read_toml_number(r, &n)) {
+
+    while(1) {
+        reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+        if(!reader_peek_u8(r, &b)) {
             return 0;
         }
-        *v = value_number(n);
-    } else {
-        switch(b) {
-            case '\"': 
-            case '\'': {
-                str s;
-                if(!reader_read_toml_string(r, &s)) {
-                    return 0;
-                }
-
-                *v = value_str(s);
-            } break;
-            case '#': {
-                return 0;
-            } break;
-            case 'f': {
-                if(!reader_expect_strd(r, "false")) {
-                    return 0;
-                }
-                *v = value_boolean(0);
-            } break;
-            case 't': {
-                if(!reader_expect_strd(r, "true")) {
-                    return 0;
-                }
-                *v = value_boolean(1);
-            } break;
-            case '-':
-            case '+': {
-                if(reader_peek_strd(r, "+inf")) {
-                    if(!reader_expect_strd(r, "+inf")) todo();
-                    *v = value_number(1.0 / 0.0);
-                    break;
-                }
-                if(reader_peek_strd(r, "-inf")) {
-                    if(!reader_expect_strd(r, "-inf")) todo();
-                    *v = value_number(-1.0 / 0.0);
-                    break;
-                }
-                if(reader_peek_strd(r, "+nan")) {
-                    if(!reader_expect_strd(r, "+nan")) todo();
-                    *v = value_number(0.0 / 0.0);
-                    break;
-                }
-                if(reader_peek_strd(r, "-nan")) {
-                    if(!reader_expect_strd(r, "-nan")) todo();
-                    *v = value_number(-0.0 / 0.0);
-                    break;
-                }
-
-                f64 n;
-                if(!reader_read_toml_number(r, &n)) {
-                    return 0;
-                }
-                *v = value_number(n);
-            } break;
-            case 'n': {
-                if(!reader_expect_strd(r, "nan")) {
-                    return 0;
-                }
-                *v = value_number(0.0 /0.0);
-            } break;
-            case '.': {
-                return 0;
-            } break;
-            case 'i': {
-                if(!reader_expect_strd(r, "inf")) {
-                    return 0;
-                }
-                *v = value_number(1.0 /0.0);
-            } break;
-            default: {
-                printf("'%c' (0x%02x)\n", b, b);
+	
+		if(b == '#') {
+			if(!reader_read_u8(r, &b)) return 0;
+			if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
+        } else if(b == ']') {
+            if(!reader_read_u8(r, &b)) { 
                 todo();
-            } break;
+            }
+            break;
+        } else {
+            Value v;
+            if(!reader_read_toml_value(r, &v)) {
+                return 0;
+            }
+
+            array_append(array, v);
+			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+            if(!reader_read_u8(r, &b)) {
+                return 0;
+            }
+            if(b == ']') {
+                break;
+            } else if(b == ',') {
+                // continue
+            } else {
+                return 0;
+            }
         }
     }
 
+	
+	array->kind = KIND_ARRAY_FINAL;
     return 1;
+
+}
+
+b8 reader_read_toml_object(Reader *r, Value *object) {
+
+    u8 b;
+    if(!reader_read_u8(r, &b) || b != '{') {
+        return 0;
+    }
+
+    while(1) {
+        reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+        if(!reader_peek_u8(r, &b)) {
+            todo();
+            return 0;
+        }
+
+        if(b == '}') {
+            if(!reader_read_u8(r, &b)) { 
+                todo();
+            }
+            break;
+        } else {
+
+			Value *obj = object;
+
+			b8 running = 1;
+			str key;
+			while(running) {
+				switch(reader_read_toml_key(r, &key)) {
+					case TOML_KEY_RETURN_DONE: {
+
+						running = 0;
+					} break;
+					case TOML_KEY_RETURN_DOT: {
+
+						if(object_get(obj, key, &obj)) {
+						} else {
+							Value value = value_object();
+							object_set(obj, key, value);
+							if(!object_get(obj, key, &obj)) todo();
+						}
+						if(obj->kind != KIND_OBJECT) {
+							return 0;
+						}
+
+					} break;
+					case TOML_KEY_RETURN_ERROR: {
+						return 0;
+					} break;
+				}
+			}
+
+			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+			if(!reader_read_u8(r, &b) || b != '=') {
+				return 0;
+			}
+
+			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+			Value v;
+			if(!reader_read_toml_value(r, &v)) {
+				todo();
+				return 0;
+			}
+
+			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+
+			object_set(obj, key, v);
+
+			if(!reader_read_u8(r, &b)) {
+				todo();
+				return 0;
+			}
+			if(b == '}') {
+				break;
+			} else if(b == ',') {
+				// continue
+			} else {
+				todo();
+				return 0;
+			}
+		}
+	}
+
+	
+	object->kind = KIND_OBJECT_FINAL;
+	return 1;
+
+}
+
+b8 reader_read_toml_value(Reader *r, Value *v) {
+
+	u8 b;
+	if(!reader_peek_u8(r, &b)) {
+		return 0;
+	}
+	if('0' <= b && b <= '9') {
+
+		u64 off = r->off;
+
+		u8s buffer = {0};
+		while(1) {
+			if(!reader_peek_u8(r, &b)) {
+				break;
+			}
+			if(b == '\n' || b == ',' || b == ']' || b == '}') {
+				break;
+			} else if(b == '\r') {
+				if(reader_peek_nth_u8(r, &b, 1) && b == '\n') {
+					break;
+				} else {
+					if(!reader_read_u8(r, &b)) todo();
+					da_append(&buffer, b);
+				}
+			} else {
+				if(!reader_read_u8(r, &b)) todo();
+				da_append(&buffer, b);
+			}
+		}
+
+		Reader buffer_reader = reader_from_memory(buffer.data, buffer.len);
+
+		str date;
+		if(reader_read_toml_offset_date_time(&buffer_reader, &date, 0)) {
+			*v = value_str(date);
+		} else {
+			buffer_reader = (Reader) reader_from_memory(buffer.data, buffer.len);
+			if(reader_read_toml_offset_date_time(&buffer_reader, &date, 1)) {
+				*v = value_str(date);
+			} else {
+				buffer_reader = (Reader) reader_from_memory(buffer.data, buffer.len);
+
+				f64 n;
+				if(!reader_read_toml_number(&buffer_reader, &n)) {
+					r->off = off;
+					return 0;
+				}
+				*v = value_number(n);
+			}
+
+
+		}
+
+		reader_skip_any(&buffer_reader, toml_whitespace, toml_whitespace_len);
+		if(reader_peek_u8(&buffer_reader, &b)) {
+			if(b == '#') {
+
+			} else {
+				r->off = off;
+				return 0;
+			}
+		}
+
+	} else {
+		switch(b) {
+			// TODO: disallow trailing comma and newline. Add tests for that
+			case '{': {
+				*v = value_object();
+				if(!reader_read_toml_object(r, v)) {
+					return 0;
+				}
+			} break;
+			case '[': {
+				*v = value_array();
+				if(!reader_read_toml_array(r, v)) {
+					return 0;
+				}
+			} break;
+			case '\"': 
+			case '\'': {
+				str s;
+				if(!reader_read_toml_string(r, &s)) {
+					return 0;
+				}
+
+				*v = value_str(s);
+			} break;
+			case '#': {
+				return 0;
+			} break;
+			case 'f': {
+				if(!reader_expect_strd(r, "false")) {
+					return 0;
+				}
+				*v = value_boolean(0);
+			} break;
+			case 't': {
+				if(!reader_expect_strd(r, "true")) {
+					return 0;
+				}
+				*v = value_boolean(1);
+			} break;
+			case '-':
+			case '+': {
+				if(reader_peek_strd(r, "+inf")) {
+					if(!reader_expect_strd(r, "+inf")) todo();
+					*v = value_number(1.0 / 0.0);
+					break;
+				}
+				if(reader_peek_strd(r, "-inf")) {
+					if(!reader_expect_strd(r, "-inf")) todo();
+					*v = value_number(-1.0 / 0.0);
+					break;
+				}
+				if(reader_peek_strd(r, "+nan")) {
+					if(!reader_expect_strd(r, "+nan")) todo();
+					*v = value_number(0.0 / 0.0);
+					break;
+				}
+				if(reader_peek_strd(r, "-nan")) {
+					if(!reader_expect_strd(r, "-nan")) todo();
+					*v = value_number(-0.0 / 0.0);
+					break;
+				}
+
+				f64 n;
+				if(!reader_read_toml_number(r, &n)) {
+					return 0;
+				}
+				*v = value_number(n);
+			} break;
+			case 'n': {
+				if(!reader_expect_strd(r, "nan")) {
+					return 0;
+				}
+				*v = value_number(0.0 /0.0);
+			} break;
+			case '.': {
+				return 0;
+			} break;
+			case 'i': {
+				if(!reader_expect_strd(r, "inf")) {
+					return 0;
+				}
+				*v = value_number(1.0 /0.0);
+			} break;
+			default: {
+				printf("'%c' (0x%02x)\n", b, b);
+				todo();
+			} break;
+		}
+	}
+
+	return 1;
 
 }
 
 b8 reader_read_toml_file(Reader *r, Value *object) {
-    if(object->kind != KIND_OBJECT) todo();
+	if(object->kind != KIND_OBJECT) todo();
+	
+	Value *array_value = object;
+	str array_key = { NULL, 0 };
+	Value *curr = object;
 
-    while(1) {
-        reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+	Value used_keys = value_array();
 
-        u8 b;
-        if(!reader_peek_u8(r, &b)) {
-            break;
-        }
-        switch(b) {
-            case '\r': {
-                if(!reader_read_u8(r, &b)) return 0;
-                if(!reader_read_u8(r, &b) || b != '\n') return 0;
-            } break;
-            case '\n': {
-                if(!reader_read_u8(r, &b)) return 0;
-            } break;
-            case '#': {
-                if(!reader_read_u8(r, &b)) return 0;
-                if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
-            } break;
-            default: {
-                Value *obj = object;
+	while(1) {
+		reader_skip_any(r, toml_whitespace, toml_whitespace_len);
 
-                b8 running = 1;
-                str key;
-                while(running) {
-                    switch(reader_read_toml_key(r, &key)) {
-                        case TOML_KEY_RETURN_DONE: {
-                            running = 0;
-                        } break;
-                        case TOML_KEY_RETURN_DOT: {
+		u8 b;
+		if(!reader_peek_u8(r, &b)) {
+			break;
+		}
+		switch(b) {
+			case '\r': {
+				if(!reader_read_u8(r, &b)) return 0;
+				if(!reader_read_u8(r, &b) || b != '\n') return 0;
+			} break;
+			case '\n': {
+				if(!reader_read_u8(r, &b)) return 0;
+			} break;
+			case '#': {
+				if(!reader_read_u8(r, &b)) return 0;
+				if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
+			} break;
+			case '[': {
+				if(reader_peek_nth_u8(r, &b, 1) && b == '[') {
+					if(!reader_read_u8(r, &b)) todo();
+					if(!reader_read_u8(r, &b)) todo();
 
-                            if(object_get(obj, key, &obj)) {
-                            } else {
-                                Value value = value_object();
-                                object_set(obj, key, value);
-                                if(!object_get(obj, key, &obj)) todo();
-                            }
-                            if(obj->kind != KIND_OBJECT) {
-                                return 0;
-                            }
+					Value *obj = object;
+	
+					b8 set_array = 1;
+					b8 running = 1;
+					str key;
+					for(u64 i=0;running;i++) {
+						switch(reader_read_toml_key(r, &key)) {
+							case TOML_KEY_RETURN_DONE: {
 
-                        } break;
-                        case TOML_KEY_RETURN_ERROR: {
-                            return 0;
-                        } break;
-                    }
-                }
+								running = 0;
+							} break;
+							case TOML_KEY_RETURN_DOT: {
 
-                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
-                if(!reader_read_u8(r, &b) || b != '=') return 0;
-                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+								if(i == 0 && str_eq(array_key, key)) {
+									obj = array_value;	
+									set_array = 0;
+								} else {
+									if(object_get(obj, key, &obj)) {
 
-                Value value;
-                if(!reader_read_toml_value(r, &value)) {
-                    return 0;
-                }
+									} else {
+										Value value = value_object();
+										object_set(obj, key, value);
+										if(!object_get(obj, key, &obj)) todo();
+									}
+								}
+								if(obj->kind != KIND_OBJECT) {
+									return 0;
+								}
 
-                if(object_set(obj, key, value)) {
-                    return 0;
-                }
+							} break;
+							case TOML_KEY_RETURN_ERROR: {
+								return 0;
+							} break;
+						}
+					}
 
-                reader_skip_any(r, toml_whitespace, toml_whitespace_len);
-                if(reader_peek_u8(r, &b)) {
-                    if(b == '#' || b == '\r' || b == '\n') {
-                        if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
-                    } else {
-                        return 0;
-                    }
-                }
+					if(obj->kind != KIND_OBJECT) {
+						return 0;
+					}
+					if(object_get(obj, key, &obj)) {
+					} else {
+						Value value = value_array();
+						object_set(obj, key, value);
+						if(!object_get(obj, key, &obj)) todo();
+					}
+					if(obj->kind != KIND_ARRAY) {
+						return 0;
+					}
 
-            } break;
-        }
+					Value value = value_object();
+					array_append(obj, value);
+					curr = array_get(obj, array_len(obj) - 1);
 
-    }
+					if(set_array) {
+						array_key = key;
+						array_value = curr;
+					}
 
+					if(!reader_read_u8(r, &b) || b != ']') todo();
+					if(!reader_read_u8(r, &b) || b != ']') todo();
 
-    return 1;
+				} else {
+					if(!reader_read_u8(r, &b)) todo();
 
-}
+					Value *obj = object;
+
+					b8 running = 1;
+					str key;
+					for(u64 i=0;running;i++) {
+						switch(reader_read_toml_key(r, &key)) {
+							case TOML_KEY_RETURN_DONE: {
+
+								running = 0;
+							} break;
+							case TOML_KEY_RETURN_DOT: {
+
+								if(i == 0 && str_eq(array_key, key)) {
+									obj = array_value;	
+								} else {
+									if(object_get(obj, key, &obj)) {
+									} else {
+										Value value = value_object();
+										object_set(obj, key, value);
+										if(!object_get(obj, key, &obj)) todo();
+									}
+								}
+								if(obj->kind != KIND_OBJECT) {
+									return 0;
+								}
+
+							} break;
+							case TOML_KEY_RETURN_ERROR: {
+								return 0;
+							} break;
+						}
+					}
+
+					b8 contained = 0;
+					for(u64 i=0;!contained && i<array_len(&used_keys);i++) {
+						Value *v = array_get(&used_keys, i);
+						if(v->kind != KIND_STR) todo();
+
+						contained = str_eq(v->as.string, key);
+					}
+					if(contained) {
+						return 0;
+					}
+					array_append(&used_keys, value_str(key));
+
+					if(obj->kind != KIND_OBJECT) {
+						return 0;
+					}
+					if(object_get(obj, key, &obj)) {
+					} else {
+						Value value = value_object();
+						object_set(obj, key, value);
+						if(!object_get(obj, key, &obj)) todo();
+					}
+					if(obj->kind != KIND_OBJECT) {
+						return 0;
+					}
+
+					curr = obj;
+
+					if(!reader_read_u8(r, &b) || b != ']') todo();
+				}
+			} break;
+			default: {
+				Value *obj = curr;
+
+				b8 running = 1;
+				str key;
+				while(running) {
+					switch(reader_read_toml_key(r, &key)) {
+						case TOML_KEY_RETURN_DONE: {
+							running = 0;
+						} break;
+						case TOML_KEY_RETURN_DOT: {
+
+							if(object_get(obj, key, &obj)) {
+							} else {
+								Value value = value_object();
+								object_set(obj, key, value);
+								if(!object_get(obj, key, &obj)) todo();
+							}
+							if(obj->kind != KIND_OBJECT) {
+								return 0;
+							}
+
+						} break;
+						case TOML_KEY_RETURN_ERROR: {
+							return 0;
+						} break;
+					}
+				}
+
+				reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+				if(!reader_read_u8(r, &b) || b != '=') return 0;
+				reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+
+				Value value;
+				if(!reader_read_toml_value(r, &value)) {
+					return 0;
+				}
+
+				if(object_set(obj, key, value)) {
+					return 0;
+				}
+
+				reader_skip_any(r, toml_whitespace, toml_whitespace_len);
+				if(reader_peek_u8(r, &b)) {
+					if(b == '#' || b == '\r' || b == '\n') {
+						if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) {
+							return 0;
+						}
+					} else {
+						return 0;
+					}
+				}
+
+			} break;
+		}
+
+	}
+
+	value_backpatch_object_final(object);
+
+	return 1;
+
+	}
 
 int main(void) {
-    Value tests;
-    Reader reader = reader_from_filed("config.json");
-    if(!reader_read_json_value(&reader, &tests)) {
-        todo();
-    }
-    if(tests.kind != KIND_ARRAY) todo();
+	Value tests;
+	Reader reader = reader_from_filed("config.json");
+	if(!reader_read_json_value(&reader, &tests)) {
+		todo();
+	}
+	if(tests.kind != KIND_ARRAY) todo();
 
-    for(u64 i=0;i<array_len(&tests);i++) {
-        Value *test = array_get(&tests, i);
-        if(test->kind != KIND_OBJECT) todo();
+	for(u64 i=0;i<array_len(&tests);i++) {
+		Value *test = array_get(&tests, i);
+		if(test->kind != KIND_OBJECT) todo();
 
-        Value *toml;
-        if(!object_get(test, (str) str_fromd("toml"), &toml)) todo();
-        Value *json;
-        b8 json_found = object_get(test, (str) str_fromd("json"), &json);
+		Value *toml;
+		if(!object_get(test, (str) str_fromd("toml"), &toml)) todo();
+		Value *json;
+		b8 json_found = object_get(test, (str) str_fromd("json"), &json);
 
-        if(toml->kind != KIND_STR) todo();
+		if(toml->kind != KIND_STR) todo();
 
-        Reader toml_reader = reader_from_files(toml->as.string);
-        printf("INFO: parsing '"str_fmt"' ...\n", str_arg(toml->as.string));
-        Value toml_value = value_object();
-        b8 read_toml = reader_read_toml_file(&toml_reader, &toml_value);
-    
-        if(json_found) { 
-            if(json->kind == KIND_NULL) {
-                if(read_toml) {
-                    fprintf(stderr, str_fmt":%llu:ERROR: Could read toml although, it should be invalid\n", str_arg(toml->as.string), toml_reader.off);
-                    todo();
-                } else {
-                    // fine
-                }
-            } else {
-                if(read_toml) {
-                    if(json->kind != KIND_STR) todo();
-                    reader = reader_from_files(json->as.string);
-                    Value json_value;
-                    if(!reader_read_json_value(&reader, &json_value)) {
-                        todo();
-                    }
+		Reader toml_reader = reader_from_files(toml->as.string);
+		printf("INFO: parsing '"str_fmt"' ...\n", str_arg(toml->as.string));
+		Value toml_value = value_object();
+		b8 read_toml = reader_read_toml_file(&toml_reader, &toml_value);
 
-                    if(!value_eq(toml_value, json_value)) {
-                        value_print(toml_value); printf("\n");
-                        value_print(json_value); printf("\n");
+		if(json_found) { 
+			if(json->kind == KIND_NULL) {
+				if(read_toml) {
+					fprintf(stderr, str_fmt":%llu:ERROR: Could read toml although, it should be invalid\n", str_arg(toml->as.string), toml_reader.off);
+					value_print(toml_value); printf("\n");
+					todo();
+				} else {
+					// fine
+				}
+			} else {
+				if(read_toml) {
+					if(json->kind != KIND_STR) todo();
+					reader = reader_from_files(json->as.string);
+					Value json_value;
+					if(!reader_read_json_value(&reader, &json_value)) {
+						todo();
+					}
 
-                        todo();
-                    }
+					if(!value_eq(toml_value, json_value)) {
+						value_print(toml_value); printf("\n");
+						value_print(json_value); printf("\n");
 
-                } else {
-                    fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
-                    todo();
-                }
-            }
-        } else {
-            if(read_toml) {
-                // fine
+						todo();
+					}
 
-                // There is no json equivalent for this :D
-            } else {
-                fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
-                todo();
-            }
-        }
-    }
+				} else {
+					fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
+					todo();
+				}
+			}
+} else {
+			if(read_toml) {
+				// fine
+				// value_print(toml_value); printf("\n");
 
-    return 0;
+				// There is no json equivalent for this :D
+			} else {
+				fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
+				todo();
+			}
+		}
+	}
+
+	return 0;
 }
