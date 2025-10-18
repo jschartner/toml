@@ -166,10 +166,10 @@
 		"toml": "locale_date_time.toml"
 	},
 	{
-		"toml": "locale_date.toml",
+		"toml": "locale_date.toml"
 	},
 	{
-		"toml": "locale_time.toml",
+		"toml": "locale_time.toml"
 	},
 	{
 		"toml": "arrays.toml",
@@ -185,7 +185,7 @@
 	},
 	{
 		"toml": "dotted_key_table.toml",
-		"json": "dotted_key_table.json",
+		"json": "dotted_key_table.json"
 	},
 	{
 		"toml": "whitespace_in_dotted_key_table.toml",
@@ -249,14 +249,22 @@
 	},
 	{
 		"toml": "redefine_as_table.toml",
-		"json": null,
+		"json": null
 	},
 	{
 		"toml": "redefine_as_array.toml",
-		"json": null,
+		"json": null
 	},
 	{
 		"toml": "points.toml",
 		"json": "points.json"
+	},
+	{
+		"toml": "invalid_trailing_comma_in_table.toml",
+		"json": null
+	},
+	{
+		"toml": "invalid_newline_in_table.toml",
+		"json": null
 	}
 ]

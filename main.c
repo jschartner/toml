@@ -776,7 +776,7 @@ b8 reader_read_json_string(Reader *r, str *s) {
 
     u8 b;
     if(!reader_read_u8(r, &b) || b != '\"') {
-        todo();
+        return 0;
     }
 
     u8s bs = {0};
@@ -997,7 +997,8 @@ b8 reader_read_json_object(Reader *r, Value *object) {
     if(!reader_read_u8(r, &b) || b != '{') {
         return 0;
     }
-
+	
+	b8 once = 1;
     while(1) {
         reader_skip_any(r, json_whitespace, json_whitespace_len);
 
@@ -1006,15 +1007,16 @@ b8 reader_read_json_object(Reader *r, Value *object) {
             return 0;
         }
 
-        if(b == '}') {
+        if(once && b == '}') {
             if(!reader_read_u8(r, &b)) { 
                 todo();
             }
             break;
         } else {
+			once = 0;
+
             str key;
             if(!reader_read_json_string(r, &key)) {
-                todo();
                 return 0;
             }
 
@@ -1062,7 +1064,8 @@ b8 reader_read_json_array(Reader *r, Value *array) {
     if(!reader_read_u8(r, &b) || b != '[') {
         return 0;
     }
-
+	
+	b8 once = 1;
     while(1) {
         reader_skip_any(r, json_whitespace, json_whitespace_len);
 
@@ -1070,12 +1073,14 @@ b8 reader_read_json_array(Reader *r, Value *array) {
             return 0;
         }
 
-        if(b == ']') {
+        if(once && b == ']') {
             if(!reader_read_u8(r, &b)) { 
                 todo();
             }
             break;
         } else {
+			once = 0;
+
             Value v;
             if(!reader_read_json_value(r, &v)) {
                 return 0;
@@ -2150,21 +2155,23 @@ b8 reader_read_toml_object(Reader *r, Value *object) {
     if(!reader_read_u8(r, &b) || b != '{') {
         return 0;
     }
-
+	
+	b8 once = 1;
     while(1) {
-        reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+        reader_skip_any(r, toml_whitespace, toml_whitespace_len);
 
         if(!reader_peek_u8(r, &b)) {
             todo();
             return 0;
         }
 
-        if(b == '}') {
+        if(once && b == '}') {
             if(!reader_read_u8(r, &b)) { 
                 todo();
             }
             break;
         } else {
+			once = 0;
 
 			Value *obj = object;
 
@@ -2195,13 +2202,13 @@ b8 reader_read_toml_object(Reader *r, Value *object) {
 				}
 			}
 
-			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+			reader_skip_any(r, toml_whitespace, toml_whitespace_len);
 
 			if(!reader_read_u8(r, &b) || b != '=') {
 				return 0;
 			}
 
-			reader_skip_any(r, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len);
+			reader_skip_any(r, toml_whitespace, toml_whitespace_len);
 
 			Value v;
 			if(!reader_read_toml_value(r, &v)) {
@@ -2617,8 +2624,10 @@ b8 reader_read_toml_file(Reader *r, Value *object) {
 
 int main(void) {
 	Value tests;
-	Reader reader = reader_from_filed("config.json");
+	char filepath[] = "config.json";
+	Reader reader = reader_from_filed(filepath);
 	if(!reader_read_json_value(&reader, &tests)) {
+		fprintf(stderr, "%s:%llu:ERROR: Cannot parse json\n", filepath, reader.off);
 		todo();
 	}
 	if(tests.kind != KIND_ARRAY) todo();
