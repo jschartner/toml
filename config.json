@@ -43,5 +43,121 @@
     {
         "toml": "dotted_keys.toml",
         "json": "dotted_keys.json"
+    },
+    {
+        "toml": "whitespace_around_dotted_keys.toml",
+        "json": "whitespace_around_dotted_keys.json"
+    },
+    {
+        "toml": "duplicate_key.toml",
+        "json": null
+    },
+    {
+        "toml": "bare_keys_and_qoutes_keys_are_equivalent.toml",
+        "json": null
+    },
+    {
+        "toml": "write_to_undefined_keys.toml",
+        "json": "write_to_undefined_keys.json" 
+    },
+    {
+        "toml": "tries_to_turn_number_to_object.toml",
+        "json": null
+    },
+    {
+        "toml": "dotted_keys_out_of_order.toml",
+        "json": "dotted_keys_any_order.json"
+    },
+    {
+        "toml": "dotted_keys_in_order.toml",
+        "json": "dotted_keys_any_order.json"
+    },
+    {
+        "toml": "pi.toml",
+        "json": "pi.json"
+    },
+    {
+        "toml": "basic_strings.toml",
+        "json": "basic_strings.json"
+    },
+    {
+        "toml": "multi_line_basic_strings.toml",
+        "json": "multi_line_basic_strings.json"
+    },
+    {
+        "toml": "line_ending_backslash.toml",
+        "json": "line_ending_backslash.json"
+    },
+    {
+        "toml": "qoutation_marks_in_multi_line_basic_string.toml",
+        "json": "qoutation_marks_in_multi_line_basic_string.json"
+    },
+    {
+        "toml": "invalid_qoutation_marks_in_multi_line_basic_string.toml",
+        "json": null
+    },
+    {
+        "toml": "literal_strings.toml",
+        "json": "literal_strings.json" 
+    },
+    {
+        "toml": "multi_line_literal_strings.toml",
+        "json": "multi_line_literal_strings.json" 
+    },
+    {
+        "toml": "qoutation_marks_in_multi_line_literal_string.toml",
+        "json": "qoutation_marks_in_multi_line_literal_string.json" 
+    },
+    {
+        "toml": "invalid_qoutation_marks_in_multi_line_literal_string.toml",
+        "json": null
+    },
+    {
+        "toml": "integer.toml",
+        "json": "integer.json"
+    },
+    {
+        "toml": "underscores_in_integers.toml",
+        "json": "underscores_in_integers.json"
+    },
+    {
+        "toml": "leading_zeros.toml",
+        "json": null
+    },
+    {
+        "toml": "hex_octal_bin.toml",
+        "json": "hex_octal_bin.json"
+    },
+    {
+        "toml": "invalid_hex_octal_bin.toml",
+        "json": null
+    },
+    {
+        "toml": "floats.toml",
+        "json": "floats.json" 
+    },
+    {
+        "toml": "invalid_float_1.toml",
+        "json": null
+    },
+    {
+        "toml": "invalid_float_2.toml",
+        "json": null
+    },
+    {
+        "toml": "invalid_float_3.toml",
+        "json": null
+    },
+    {
+        "toml": "underscores_in_floats.toml",
+        "json": "underscores_in_floats.json"
+    },
+    {
+        "toml": "inf_and_nan.toml"
+    },
+    {
+        "toml": "booleans.toml",
+        "json": "booleans.json"
     }
+
 ]

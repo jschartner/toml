@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -13,6 +14,7 @@
 #endif
 
 // https://www.json.org/json-de.html
+// https://toml.io/en/v1.0.0
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -24,7 +26,7 @@ typedef double f64;
 
 #define __TEXT__(...) #__VA_ARGS__
 
-#define todo() do{ fprintf(stderr, "%s:%d:TODO\n", __FILE__, __LINE__); exit(1); }while(0)
+#define todo() do{ asm("int3"); fprintf(stderr, "%s:%d:TODO\n", __FILE__, __LINE__); exit(1); }while(0)
 
 #define da_reserve(xs, len) do {\
     u64 __FILE__##__LINE__##cap = (xs)->cap;\
@@ -143,10 +145,10 @@ void array_append(Value *array, Value value) {
     da_append(&array->as.array, value);
 }
 
-Value array_get(Value *array, u64 index) {
+Value *array_get(Value *array, u64 index) {
     if(array->kind != KIND_ARRAY) todo();
     if(array->as.array.len <= index) todo();
-    return array->as.array.data[index];
+    return &array->as.array.data[index];
 }
 
 
@@ -325,9 +327,11 @@ b8 value_eq(Value a, Value b) {
     switch(kind) {
         case KIND_NULL: todo();
         case KIND_BOOL: {
-            return a.as.boolean = b.as.boolean;
+            return a.as.boolean == b.as.boolean;
         } break;
-        case KIND_NUMBER: todo(); 
+        case KIND_NUMBER: {
+            return a.as.number == b.as.number;
+        }; 
         case KIND_STR: {
             return str_eq(a.as.string, b.as.string);
         } break;
@@ -371,7 +375,7 @@ void value_print(Value v) {
             printf("[");
             for(u64 i=0;i<array_len(&v);i++) {
                 if(i != 0) printf(","); 
-                value_print(array_get(&v, i));
+                value_print(*array_get(&v, i));
             }
             printf("]");
         } break;
@@ -515,12 +519,12 @@ Reader reader_from_file(u8 *name, u64 name_len) {
 #define reader_from_filed(cstr) reader_from_file((cstr), sizeof(cstr) - 1)
 #define reader_from_files(s) reader_from_file((s).data, (s).len)
 
-b8 reader_peek_u8(Reader *r, u8 *b) {
+b8 reader_peek_nth_u8(Reader *r, u8 *b, u64 n) {
     switch(r->kind) {
         case READER_KIND_MEMORY: {
             Memory *m = &r->as.memory;
 
-            if(0 < m->len) {
+            if(n < m->len) {
                 *b = m->data[0];
                 return 1;
             } else {
@@ -562,13 +566,25 @@ b8 reader_peek_u8(Reader *r, u8 *b) {
 #endif 
 
             }
+    
+            if(r->off + n < f->len) {
+                if(f->buf_pos + n < f->buf_len) {
+                    *b = f->buf[f->buf_pos + n];
+                    return 1;
+                } else {
+                    todo();
+                }
 
-            *b = f->buf[f->buf_pos];
-            return 1;
-
+            } else {
+                return 0;
+            }
         } break;
         default: todo();
     }
+}
+
+b8 reader_peek_u8(Reader *r, u8 *b) {
+    return reader_peek_nth_u8(r, b, 0);
 }
 
 b8 reader_read_u8(Reader *r, u8 *b) {
@@ -651,6 +667,17 @@ void reader_skip_any(Reader *r, u8 *bs, u64 len) {
 
     }
 }
+
+b8 reader_peek_str(Reader *r, str s) {
+    u64 i=0;
+    u8 b;
+    while(i<s.len && reader_peek_nth_u8(r, &b, i) && b == s.data[i]) {
+        i += 1;
+    }
+
+    return i == s.len;
+}
+#define reader_peek_strd(r, cstr) reader_peek_str((r), (str) str_fromd(cstr))
 
 b8 reader_expect_str(Reader *r, str s) {
     u64 i=0;
@@ -820,7 +847,7 @@ b8 reader_read_json_number(Reader *r, f64 *number) {
             } break;
             case LEFT: {
                 if(b == 'e' || b == 'E') {
-                    todo();
+                    state = EXPONENT_IDLE;
                 } else if('0' <= b && b <= '9') {
                     left *= 10;
                     left += b - '0';
@@ -1132,11 +1159,17 @@ str toml_newlines[] = {
 };
 u64 toml_newlines_len = sizeof(toml_newlines)/sizeof(*toml_newlines);
 
-typedef enum {
-    TOML_KEY_MODE_NO_QOUTE,
-    TOML_KEY_MODE_SINGLE_QOUTE,
-    TOML_KEY_MODE_DOUBLE_QOUTE,
-} Toml_Key_Mode;
+u8 toml_whitespace_and_new_line[] = { ' ', '\t', '\r', '\n' };
+u64 toml_whitespace_and_new_line_len = sizeof(toml_whitespace_and_new_line) / sizeof(*toml_whitespace_and_new_line);
+
+b8 u8_eq_any(u8 b, u8 *bs, u64 bs_len) {
+    for(u64 i=0;i<bs_len;i++) {
+        if(bs[i] == b) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 typedef enum {
     TOML_KEY_RETURN_DONE,
@@ -1144,8 +1177,16 @@ typedef enum {
     TOML_KEY_RETURN_ERROR,
 } Toml_Key_Return;
 
-Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_Key_Mode *mode) {
+Toml_Key_Return reader_read_toml_key(Reader *r, str *s) {
     // A-Za-z0-9_-
+
+    // TODO: remove prefix
+    typedef enum {
+        TOML_KEY_MODE_NO_QOUTE,
+        TOML_KEY_MODE_SINGLE_QOUTE,
+        TOML_KEY_MODE_DOUBLE_QOUTE,
+    } Toml_Key_Mode;
+    Toml_Key_Mode mode = TOML_KEY_MODE_NO_QOUTE;
 
     u8 b;
     if(!reader_peek_u8(r, &b)) {
@@ -1158,7 +1199,7 @@ Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_Key_Mode *mode) {
     u8s bs = {0};
     Toml_Key_Return ret = TOML_KEY_RETURN_DONE;
     while(running) {
-        switch(*mode) {
+        switch(mode) {
             case TOML_KEY_MODE_NO_QOUTE: {
                 if(!reader_peek_u8(r, &b)) todo();
                 if( ('A' <= b && b <= 'Z') || 
@@ -1169,22 +1210,26 @@ Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_Key_Mode *mode) {
                     da_append(&bs, b); 
                 } else if(b == '\'') {
                     if(!reader_read_u8(r, &b)) todo();
-                    *mode = TOML_KEY_MODE_SINGLE_QOUTE;
+                    mode = TOML_KEY_MODE_SINGLE_QOUTE;
                 } else if(b == '\"') {
                     if(!reader_read_u8(r, &b)) todo();
-                    *mode = TOML_KEY_MODE_DOUBLE_QOUTE;
+                    mode = TOML_KEY_MODE_DOUBLE_QOUTE;
                 } else if(b == '.') {
                     if(!reader_read_u8(r, &b)) todo();
                     ret = TOML_KEY_RETURN_DOT;
                     running = 0;
                 } else {
-                    running = 0;
+                    if(u8_eq_any(b, toml_whitespace, toml_whitespace_len)) {
+                        if(!reader_read_u8(r, &b)) todo();
+                    } else {
+                        running = 0;
+                    }
                 }
             } break;
             case TOML_KEY_MODE_SINGLE_QOUTE: {
                 if(!reader_read_u8(r, &b)) todo();
                 if(b == '\'') {
-                    *mode = TOML_KEY_MODE_NO_QOUTE;
+                    mode = TOML_KEY_MODE_NO_QOUTE;
                 } else {
                     da_append(&bs, b); 
                 }
@@ -1192,7 +1237,7 @@ Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_Key_Mode *mode) {
             case TOML_KEY_MODE_DOUBLE_QOUTE: {
                 if(!reader_read_u8(r, &b)) todo();
                 if(b == '\"') {
-                    *mode = TOML_KEY_MODE_NO_QOUTE;
+                    mode = TOML_KEY_MODE_NO_QOUTE;
                 } else {
                     da_append(&bs, b); 
                 }
@@ -1208,12 +1253,98 @@ Toml_Key_Return reader_read_toml_key(Reader *r, str *s, Toml_Key_Mode *mode) {
     return ret;
 }
 
+typedef enum {
+    TOML_HANDLE_STRING_RESULT_OKAY,
+    TOML_HANDLE_STRING_RESULT_SKIP_WHITESPACE,
+    TOML_HANDLE_STRING_RESULT_ERROR,
+} Toml_Handle_String_Result;
+
+Toml_Handle_String_Result reader_handle_toml_basic_string(Reader *r, u8s *bs, u8 b, b8 is_multi_line) {
+    if(b == '\"') {
+        todo();
+    }
+
+    if(b == '\\') {
+        if(!reader_read_u8(r, &b)) {
+            return TOML_HANDLE_STRING_RESULT_ERROR;
+        }
+        switch(b) {
+            case '\\': da_append(bs, '\\'); break;
+            case '"': da_append(bs, '\"'); break;
+            case 'b': da_append(bs, '\b'); break;
+            case 'f': da_append(bs, '\f'); break;
+            case 'n': da_append(bs, '\n'); break;
+            case 'r': da_append(bs, '\r'); break;
+            case 't': da_append(bs, '\t'); break;
+            case '\n': {
+                if(is_multi_line) {
+                    return TOML_HANDLE_STRING_RESULT_SKIP_WHITESPACE;
+                } else {
+                    return 0;
+                }
+            } break; 
+            case 'u': {
+                u32 n = 0;
+                for(u8 i=0;i<4;i++) {
+                    if(!reader_read_u8(r, &b)) {
+                        return TOML_HANDLE_STRING_RESULT_ERROR;
+                    }
+
+                    n *= 16;
+                    if('0' <= b && b <= '9') {
+                        n += b - '0';
+                    } else if('a' <= b && b <= 'f') {
+                        n += b - 'W';
+                    } else if('A' <= b && b <= 'F') {
+                        n += b - '7';
+                    } else {
+                        return TOML_HANDLE_STRING_RESULT_ERROR;
+                    }
+                }
+
+                rune_encode(n, bs);
+            } break;
+            case 'U': {
+                u32 n = 0;
+                for(u8 i=0;i<8;i++) {
+                    if(!reader_read_u8(r, &b)) {
+                        return TOML_HANDLE_STRING_RESULT_ERROR;
+                    }
+
+                    n *= 16;
+                    if('0' <= b && b <= '9') {
+                        n += b - '0';
+                    } else if('a' <= b && b <= 'f') {
+                        n += b - 'W';
+                    } else if('A' <= b && b <= 'F') {
+                        n += b - '7';
+                    } else {
+                        return TOML_HANDLE_STRING_RESULT_ERROR;
+                    }
+                }
+
+                rune_encode(n, bs);
+            } break;
+            default:
+                      return TOML_HANDLE_STRING_RESULT_ERROR;
+        }
+    } else {
+        da_append(bs, b);
+    } 
+
+    return TOML_HANDLE_STRING_RESULT_OKAY;
+}
+
 b8 reader_read_toml_string(Reader *r, str *s) {
 
     typedef enum {
-        SINGLE,
-        DOUBLE
+        BASIC_STRING,
+        MULTI_LINE_BASIC_STRING,
+        LITERAL_STRING,
+        MULTI_LINE_LITERAL_STRING,
     } Mode;
+    u64 count = 0;
+    b8 skip_whitespace = 0;
 
     u8 b;
     if(!reader_read_u8(r, &b)) {
@@ -1221,31 +1352,152 @@ b8 reader_read_toml_string(Reader *r, str *s) {
         // return 0;
     }
     Mode mode;
-    if(b == '\'') mode = SINGLE;
-    else if(b == '\"') mode = DOUBLE;
+    if(b == '\'') mode = LITERAL_STRING;
+    else if(b == '\"') mode = BASIC_STRING;
     else return 0;
 
     u8s bs = {0};
     b8 running = 1;
     while(running) {
-        if(!reader_read_u8(r, &b)) {
-            return 0;
-        }
+
         switch(mode) {
-            case SINGLE: {
+            case MULTI_LINE_LITERAL_STRING: {
+                if(!reader_peek_u8(r, &b)) {
+                    todo();
+                    if(2 <= count) {
+                        for(u64 i=0;i<(count - 2);i++) da_append(&bs, '\'');
+                        running = 0;
+                        break;
+                    } else {
+                        return 0;
+                    }
+                }
                 if(b == '\'') {
-                    running = 0;
+                    if(!reader_read_u8(r, &b)) todo();
+                    if(count == 6) {
+                        return 0;
+                    }
+                    count += 1;
+                } else {
+                    if(count == 0) {
+
+                    } else if(count < 3) {
+                        for(u64 i=0;i<count;i++) da_append(&bs, '\'');
+                        count = 0;
+                    } else if(3 <= count) {
+                        for(u64 i=0;i<(count - 3);i++) da_append(&bs, '\'');
+                        running = 0;
+                        break;
+                    }
+
+                    if(!reader_read_u8(r, &b)) todo();
+                    da_append(&bs, b);
+                }
+
+            } break;
+            case LITERAL_STRING: {
+                if(!reader_read_u8(r, &b)) todo();
+                if(b == '\'') {
+                    if(bs.len == 0 && reader_peek_u8(r, &b) && b == '\'') {
+                        if(!reader_read_u8(r, &b)) todo();
+                        if(reader_peek_u8(r, &b)) {
+                            if(b == '\n') {
+                                if(!reader_read_u8(r, &b)) todo();
+                            } else if(b == '\r') {
+                                if(reader_peek_nth_u8(r, &b, 1) && b == '\n') {
+                                    if(!reader_read_u8(r, &b)) todo();
+                                    if(!reader_read_u8(r, &b)) todo();
+                                }
+                            }
+                        }
+
+                        mode = MULTI_LINE_LITERAL_STRING;
+                        count = 0;
+                    } else {
+                        running = 0;
+                    }
                 } else {
                     da_append(&bs, b);
                 }
             } break;
-            case DOUBLE: {
+            case BASIC_STRING: {
+                if(!reader_read_u8(r, &b)) todo();
                 if(b == '\"') {
-                    running = 0;
+                    if(bs.len == 0 && reader_peek_u8(r, &b) && b == '\"') {
+                        if(!reader_read_u8(r, &b)) todo();
+                        if(reader_peek_u8(r, &b)) {
+                            if(b == '\n') {
+                                if(!reader_read_u8(r, &b)) todo();
+                            } else if(b == '\r') {
+                                if(reader_peek_nth_u8(r, &b, 1) && b == '\n') {
+                                    if(!reader_read_u8(r, &b)) todo();
+                                    if(!reader_read_u8(r, &b)) todo();
+                                }
+                            }
+                        }
+
+                        mode = MULTI_LINE_BASIC_STRING;
+                        count = 0;
+                        skip_whitespace = 0;
+                    } else {
+                        running = 0;
+                    }
                 } else {
-                    da_append(&bs, b);
+                    if(reader_handle_toml_basic_string(r, &bs, b, 0) == TOML_HANDLE_STRING_RESULT_ERROR) {
+                        return 0;
+                    }
                 }
             } break;
+            case MULTI_LINE_BASIC_STRING: {
+                if(!reader_peek_u8(r, &b)) {
+                    todo();
+                    if(2 <= count) {
+                        for(u64 i=0;i<(count - 2);i++) da_append(&bs, '\"');
+                        running = 0;
+                        break;
+                    } else {
+                        return 0;
+                    }
+                }
+                if(skip_whitespace) {
+                    if(u8_eq_any(b, toml_whitespace_and_new_line, toml_whitespace_and_new_line_len)) {
+                        if(!reader_read_u8(r, &b)) todo();
+                        break;
+                    } else {
+                        skip_whitespace = 0;
+                    }
+                }
+                if(b == '\"') {
+                    if(!reader_read_u8(r, &b)) todo();
+                    count += 1;
+                } else {
+                    if(count == 0) {
+
+                    } else if(count < 3) {
+                        for(u64 i=0;i<count;i++) da_append(&bs, '\"');
+                        count = 0;
+                    } else if(3 <= count) {
+                        for(u64 i=0;i<(count - 3);i++) da_append(&bs, '\"');
+                        running = 0;
+                        break;
+                    }
+
+                    if(!reader_read_u8(r, &b)) todo();
+                    switch(reader_handle_toml_basic_string(r, &bs, b, 1)) {
+                        case TOML_HANDLE_STRING_RESULT_OKAY: {
+                        } break;
+                        case TOML_HANDLE_STRING_RESULT_SKIP_WHITESPACE: {
+                            skip_whitespace = 1; 
+                        } break;
+                        case TOML_HANDLE_STRING_RESULT_ERROR: {
+                            return 0;
+                        } break;
+                    }
+                }
+            } break;
+
+            default:
+                todo();
         }
 
     }
@@ -1254,41 +1506,329 @@ b8 reader_read_toml_string(Reader *r, str *s) {
     return 1;
 }
 
+b8 reader_read_toml_number(Reader *r, f64 *number) {
+
+    typedef enum {
+        IDLE,
+        AFTER_SIGN,
+        LEFT,
+        ZERO,
+        ZERO_START,
+        RIGHT,
+        EXPONENT_IDLE,
+        EXPONENT,
+        HEX,
+        OCTAL,
+        BINARY,
+    } State;
+    State state = IDLE;
+
+    b8 prev_was_underscore = 0;
+
+    b8 negative = 0;
+    b8 exponent_negative = 0;
+    u64 left = 0;
+    u64 right = 0;
+    u64 right_count = 0;
+    u64 exponent = 1;
+
+    u64 off = r->off;
+
+    b8 done = 0;
+    while(!done) {
+
+        u8 b;
+        if(!reader_peek_u8(r, &b)) {
+            break;
+        }
+
+        switch(state) {
+            case IDLE: {
+                if(b == '-') {
+                    negative = 1;
+                    state = AFTER_SIGN;
+                } else if(b == '+') {
+                    // negative = 0;
+                    state = AFTER_SIGN;
+                } else if(b == '0') {
+                    state = ZERO_START;
+                } else if('1' <= b && b <= '9') {
+                    left = b - '0';
+                    state = LEFT;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case ZERO: {
+                if(b == '.') {
+                    state = RIGHT;
+                } else if(b == 'e' || b == 'E') {
+                    state = EXPONENT_IDLE;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case ZERO_START: {
+                if(b == '.') {
+                    state = RIGHT;
+                } else if(b == 'e' || b == 'E') {
+                    state = EXPONENT_IDLE;
+                } else if(b == 'x') {
+                    state = HEX;
+                } else if(b == 'o') {
+                    state = OCTAL;
+                } else if(b == 'b') {
+                    state = BINARY;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case AFTER_SIGN: {
+                if(b == '0') {
+                    state = ZERO;
+                } else if('1' <= b && b <= '9') {
+                    left = b - '0';
+                    state = LEFT;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case LEFT: {
+                if(b == 'e' || b == 'E') {
+                    state = EXPONENT_IDLE;
+                } else if(b == '_') {
+                    if(prev_was_underscore) return 0;
+                } else if('0' <= b && b <= '9') {
+                    left *= 10;
+                    left += b - '0';
+                    // state = LEFT;
+                } else if(b == '.') {
+                    state = RIGHT;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case RIGHT: {
+                if(b == 'e' || b == 'E') {
+                    if(right_count == 0) return 0;
+                    state = EXPONENT_IDLE;
+                } else if(b == '_') {
+                    if(prev_was_underscore) return 0;
+                } else if('0' <= b && b <= '9') {
+                    right *= 10;
+                    right += b - '0';
+                    right_count += 1;
+                    // state = LEFT;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case EXPONENT_IDLE: {
+                if(b == '-') {
+                    exponent = 0;
+                    exponent_negative = 1;
+                    state = EXPONENT;
+                } else if(b == '+') {
+                    exponent = 0;
+                    state = EXPONENT;
+                } else if('0' <= b && b <= '9') {
+                    exponent = b - '0';
+                    state = EXPONENT;
+                } else {
+                    done = 1;
+                }
+            } break;
+            case EXPONENT: {
+                if('0' <= b && b <= '9') {
+                    exponent *= 10;
+                    exponent += b - '0';
+                    // state = EXPONENT;
+                } else {
+                    done = 1;
+                }
+
+            } break;
+            case HEX: {
+                if(b == '_') {
+                    if(off + 2 == r->off) return 0;
+                    if(prev_was_underscore) return 0;
+                } else if('0' <= b && b <= '9') {
+                    left *= 16;
+                    left += b - '0';
+                } else if('a' <= b && b <= 'f') {
+                    left *= 16;
+                    left += b - 'W';
+                } else if('A' <= b && b <= 'F') {
+                    left *= 16;
+                    left += b - '7';
+                } else {
+                    done = 1;
+                }
+            } break;
+            case OCTAL: {
+                if(b == '_') {
+                    if(off + 2 == r->off) return 0;
+                    if(prev_was_underscore) return 0;
+                } else if('0' <= b && b <= '7') {
+                    left *= 8;
+                    left += b - '0';
+                } else {
+                    done = 1;
+                }
+            } break;
+            case BINARY: {
+                if(b == '_') {
+                    if(off + 2 == r->off) return 0;
+                    if(prev_was_underscore) return 0;
+                } else if('0' <= b && b <= '1') {
+                    left *= 2;
+                    left += b - '0';
+                } else {
+                    done = 1;
+                }
+            } break;
+            default: todo();
+        }
+
+        prev_was_underscore = b == '_';
+
+        if(!done) {
+            if(!reader_read_u8(r, &b)) {
+                todo();
+            }
+        }
+
+
+    }
+
+    f64 rgt = (f64) right;
+    for(u64 i=0;i<right_count;i++) {
+        rgt *= 0.1;
+    }
+
+    f64 n = (f64) left + rgt;
+
+    if(exponent != 1) {
+        for(u64 i=0;i<exponent;i++) {
+            if(exponent_negative) {
+                n *= 0.1;
+            } else {
+                n *= 10;
+            }
+        }
+    }
+
+    if(negative) {
+        n *= -1;
+    }
+
+    *number = n;
+
+
+    switch(state) {
+        case IDLE: return 0;
+        case AFTER_SIGN: return 0;
+        case LEFT: return 1;
+        case ZERO: return 1;
+        case ZERO_START: return 1;
+        case RIGHT: return 0 < right_count;
+        case EXPONENT_IDLE: return 0;
+        case EXPONENT: return 1;
+        case HEX: 
+        case OCTAL:
+        case BINARY:
+            return (off + 2) < r->off;
+        default: todo();
+    }
+}
+
 b8 reader_read_toml_value(Reader *r, Value *v) {
 
     u8 b;
     if(!reader_peek_u8(r, &b)) {
         return 0;
     }
-    switch(b) {
-        case '\"': 
-        case '\'': {
-            str s;
-            if(!reader_read_toml_string(r, &s)) {
-                return 0;
-            }
-
-            *v = value_str(s);
-        } break;
-        case '#': {
+    if('0' <= b && b <= '9') {
+        f64 n;
+        if(!reader_read_toml_number(r, &n)) {
             return 0;
-        } break;
-        case 'f': {
-            if(!reader_expect_strd(r, "false")) {
+        }
+        *v = value_number(n);
+    } else {
+        switch(b) {
+            case '\"': 
+            case '\'': {
+                str s;
+                if(!reader_read_toml_string(r, &s)) {
+                    return 0;
+                }
+
+                *v = value_str(s);
+            } break;
+            case '#': {
                 return 0;
-            }
-            *v = value_boolean(0);
-        } break;
-        case 't': {
-            if(!reader_expect_strd(r, "true")) {
+            } break;
+            case 'f': {
+                if(!reader_expect_strd(r, "false")) {
+                    return 0;
+                }
+                *v = value_boolean(0);
+            } break;
+            case 't': {
+                if(!reader_expect_strd(r, "true")) {
+                    return 0;
+                }
+                *v = value_boolean(1);
+            } break;
+            case '-':
+            case '+': {
+                if(reader_peek_strd(r, "+inf")) {
+                    if(!reader_expect_strd(r, "+inf")) todo();
+                    *v = value_number(1.0 / 0.0);
+                    break;
+                }
+                if(reader_peek_strd(r, "-inf")) {
+                    if(!reader_expect_strd(r, "-inf")) todo();
+                    *v = value_number(-1.0 / 0.0);
+                    break;
+                }
+                if(reader_peek_strd(r, "+nan")) {
+                    if(!reader_expect_strd(r, "+nan")) todo();
+                    *v = value_number(0.0 / 0.0);
+                    break;
+                }
+                if(reader_peek_strd(r, "-nan")) {
+                    if(!reader_expect_strd(r, "-nan")) todo();
+                    *v = value_number(-0.0 / 0.0);
+                    break;
+                }
+
+                f64 n;
+                if(!reader_read_toml_number(r, &n)) {
+                    return 0;
+                }
+                *v = value_number(n);
+            } break;
+            case 'n': {
+                if(!reader_expect_strd(r, "nan")) {
+                    return 0;
+                }
+                *v = value_number(0.0 /0.0);
+            } break;
+            case '.': {
                 return 0;
-            }
-            *v = value_boolean(1);
-        } break;
-        default: {
-            printf("'%c' (0x%02x)\n", b, b);
-            todo();
-        } break;
+            } break;
+            case 'i': {
+                if(!reader_expect_strd(r, "inf")) {
+                    return 0;
+                }
+                *v = value_number(1.0 /0.0);
+            } break;
+            default: {
+                printf("'%c' (0x%02x)\n", b, b);
+                todo();
+            } break;
+        }
     }
 
     return 1;
@@ -1320,11 +1860,10 @@ b8 reader_read_toml_file(Reader *r, Value *object) {
             default: {
                 Value *obj = object;
 
-                Toml_Key_Mode mode = TOML_KEY_MODE_NO_QOUTE;
                 b8 running = 1;
                 str key;
                 while(running) {
-                    switch(reader_read_toml_key(r, &key, &mode)) {
+                    switch(reader_read_toml_key(r, &key)) {
                         case TOML_KEY_RETURN_DONE: {
                             running = 0;
                         } break;
@@ -1335,6 +1874,9 @@ b8 reader_read_toml_file(Reader *r, Value *object) {
                                 Value value = value_object();
                                 object_set(obj, key, value);
                                 if(!object_get(obj, key, &obj)) todo();
+                            }
+                            if(obj->kind != KIND_OBJECT) {
+                                return 0;
                             }
 
                         } break;
@@ -1353,14 +1895,17 @@ b8 reader_read_toml_file(Reader *r, Value *object) {
                     return 0;
                 }
 
-                object_set(obj, key, value);
+                if(object_set(obj, key, value)) {
+                    return 0;
+                }
 
                 reader_skip_any(r, toml_whitespace, toml_whitespace_len);
-                if(!reader_peek_u8(r, &b)) todo();
-                if(b == '#' || b == '\r' || b == '\n') {
-                    if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
-                } else {
-                    return 0;
+                if(reader_peek_u8(r, &b)) {
+                    if(b == '#' || b == '\r' || b == '\n') {
+                        if(!reader_skip_until_including_any(r, toml_newlines, toml_newlines_len)) return 0;
+                    } else {
+                        return 0;
+                    }
                 }
 
             } break;
@@ -1382,43 +1927,55 @@ int main(void) {
     if(tests.kind != KIND_ARRAY) todo();
 
     for(u64 i=0;i<array_len(&tests);i++) {
-        Value test = array_get(&tests, i);
-        if(test.kind != KIND_OBJECT) todo();
+        Value *test = array_get(&tests, i);
+        if(test->kind != KIND_OBJECT) todo();
 
         Value *toml;
-        if(!object_get(&test, (str) str_fromd("toml"), &toml)) todo();
+        if(!object_get(test, (str) str_fromd("toml"), &toml)) todo();
         Value *json;
-        if(!object_get(&test, (str) str_fromd("json"), &json)) todo();
+        b8 json_found = object_get(test, (str) str_fromd("json"), &json);
 
         if(toml->kind != KIND_STR) todo();
 
         Reader toml_reader = reader_from_files(toml->as.string);
+        printf("INFO: parsing '"str_fmt"' ...\n", str_arg(toml->as.string));
         Value toml_value = value_object();
         b8 read_toml = reader_read_toml_file(&toml_reader, &toml_value);
-
-        if(json->kind == KIND_NULL) {
-            if(read_toml) {
-                fprintf(stderr, str_fmt":%llu:ERROR: Could read toml although, it should be invalid\n", str_arg(toml->as.string), toml_reader.off);
-                todo();
+    
+        if(json_found) { 
+            if(json->kind == KIND_NULL) {
+                if(read_toml) {
+                    fprintf(stderr, str_fmt":%llu:ERROR: Could read toml although, it should be invalid\n", str_arg(toml->as.string), toml_reader.off);
+                    todo();
+                } else {
+                    // fine
+                }
             } else {
-                // fine
+                if(read_toml) {
+                    if(json->kind != KIND_STR) todo();
+                    reader = reader_from_files(json->as.string);
+                    Value json_value;
+                    if(!reader_read_json_value(&reader, &json_value)) {
+                        todo();
+                    }
+
+                    if(!value_eq(toml_value, json_value)) {
+                        value_print(toml_value); printf("\n");
+                        value_print(json_value); printf("\n");
+
+                        todo();
+                    }
+
+                } else {
+                    fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
+                    todo();
+                }
             }
         } else {
             if(read_toml) {
-                if(json->kind != KIND_STR) todo();
-                reader = reader_from_files(json->as.string);
-                Value json_value;
-                if(!reader_read_json_value(&reader, &json_value)) {
-                    todo();
-                }
+                // fine
 
-                if(!value_eq(toml_value, json_value)) {
-                    value_print(toml_value); printf("\n");
-                    value_print(json_value); printf("\n");
-
-                    todo();
-                }
-
+                // There is no json equivalent for this :D
             } else {
                 fprintf(stderr, str_fmt":%llu:ERROR: Cannot parse toml\n", str_arg(toml->as.string), toml_reader.off);
                 todo();
