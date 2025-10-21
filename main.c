@@ -321,7 +321,7 @@ Value value_boolean(b8 b) {
     };
 }
 
-b8 value_backpatch_object_final(Value *value) {
+void value_backpatch_object_final(Value *value) {
 
     switch(value->kind) {
         case KIND_NULL: break;
@@ -335,7 +335,6 @@ b8 value_backpatch_object_final(Value *value) {
 				value_backpatch_object_final(array_get(value, i));
 			}
 
-			return 1;
 		} break;
 		case KIND_OBJECT_FINAL:
         case KIND_OBJECT: {
@@ -346,8 +345,6 @@ b8 value_backpatch_object_final(Value *value) {
             while(object_next(value, &index, &entry)) {
 				value_backpatch_object_final(&entry->value);
             }
-
-            return 1;
 
         } break;
     }
@@ -477,8 +474,8 @@ typedef struct {
     u64 off;
 } Reader;
 
-#define reader_from_memory(d, l) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (d), .len = (l), }, .off= 0 }
-#define reader_from_memoryd(cstr) (Reader) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1, .off = 0} }
+#define reader_from_memory(d, l) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (d), .len = (l), }, .off= 0 }
+#define reader_from_memoryd(cstr) { .kind = READER_KIND_MEMORY, .as.memory = (Memory) { .data = (cstr), .len = sizeof(cstr) - 1, .off = 0} }
 
 
 Reader reader_from_file(u8 *name, u64 name_len) {
@@ -1334,9 +1331,17 @@ Toml_Handle_String_Result reader_handle_toml_basic_string(Reader *r, u8s *bs, u8
                 if(is_multi_line) {
                     return TOML_HANDLE_STRING_RESULT_SKIP_WHITESPACE;
                 } else {
-                    return 0;
+                    return TOML_HANDLE_STRING_RESULT_ERROR;
                 }
             } break; 
+	    case '\r': {
+		if(is_multi_line && reader_peek_u8(r, &b) && b == '\n') {
+			if(!reader_read_u8(r, &b)) todo();
+			return TOML_HANDLE_STRING_RESULT_SKIP_WHITESPACE;
+		} else {
+			return TOML_HANDLE_STRING_RESULT_ERROR;
+		}
+            } break;
             case 'u': {
                 u32 n = 0;
                 for(u8 i=0;i<4;i++) {
@@ -1579,6 +1584,7 @@ u64 days_in_month(u64 year, u64 month) {
       case 11: return 30;
       case 12: return 31;
 	}
+	return 0;
 }
 
 b8 reader_read_toml_offset_date_time(Reader *r, str *s, b8 start_with_time) {
@@ -2345,24 +2351,25 @@ b8 reader_read_toml_value(Reader *r, Value *v) {
 			} break;
 			case '-':
 			case '+': {
+				f64 zero = 0.0;
 				if(reader_peek_strd(r, "+inf")) {
 					if(!reader_expect_strd(r, "+inf")) todo();
-					*v = value_number(1.0 / 0.0);
+					*v = value_number(1.0 / zero);
 					break;
 				}
 				if(reader_peek_strd(r, "-inf")) {
 					if(!reader_expect_strd(r, "-inf")) todo();
-					*v = value_number(-1.0 / 0.0);
+					*v = value_number(-1.0 / zero);
 					break;
 				}
 				if(reader_peek_strd(r, "+nan")) {
 					if(!reader_expect_strd(r, "+nan")) todo();
-					*v = value_number(0.0 / 0.0);
+					*v = value_number(0.0 / zero);
 					break;
 				}
 				if(reader_peek_strd(r, "-nan")) {
 					if(!reader_expect_strd(r, "-nan")) todo();
-					*v = value_number(-0.0 / 0.0);
+					*v = value_number(-0.0 / zero);
 					break;
 				}
 
@@ -2373,19 +2380,21 @@ b8 reader_read_toml_value(Reader *r, Value *v) {
 				*v = value_number(n);
 			} break;
 			case 'n': {
+				f64 zero = 0.0;
 				if(!reader_expect_strd(r, "nan")) {
 					return 0;
 				}
-				*v = value_number(0.0 /0.0);
+				*v = value_number(0.0 /zero);
 			} break;
 			case '.': {
 				return 0;
 			} break;
 			case 'i': {
+				f64 zero = 0.0;
 				if(!reader_expect_strd(r, "inf")) {
 					return 0;
 				}
-				*v = value_number(1.0 /0.0);
+				*v = value_number(1.0 /zero);
 			} break;
 			default: {
 				printf("'%c' (0x%02x)\n", b, b);
