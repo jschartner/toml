@@ -2631,15 +2631,22 @@ b8 reader_read_toml_file(Reader *r, Value *object) {
 
 	}
 
+// TODO: do something about the lineendings in e.g. 'multi_line_literal_strings.toml' 
+// on linux and windows
+
 int main(void) {
 	Value tests;
+
 	char filepath[] = "config.json";
+
 	Reader reader = reader_from_filed(filepath);
 	if(!reader_read_json_value(&reader, &tests)) {
 		fprintf(stderr, "%s:%llu:ERROR: Cannot parse json\n", filepath, reader.off);
 		todo();
 	}
 	if(tests.kind != KIND_ARRAY) todo();
+
+    str base = str_fromd("tests/");
 
 	for(u64 i=0;i<array_len(&tests);i++) {
 		Value *test = array_get(&tests, i);
@@ -2650,10 +2657,23 @@ int main(void) {
 		Value *json;
 		b8 json_found = object_get(test, (str) str_fromd("json"), &json);
 
-		if(toml->kind != KIND_STR) todo();
 
-		Reader toml_reader = reader_from_files(toml->as.string);
+
+        // memcpy(buf, name, name_len);
+        // buf[name_len] = 0;
+
+		if(toml->kind != KIND_STR) todo();
+        str toml_string = toml->as.string;
+
+        u8 buf[PATH_MAX];
+        memcpy(buf, base.data, base.len);
+        memcpy(buf + base.len, toml_string.data, toml_string.len);
+
+        toml_string = (str) { buf, base.len + toml_string.len };
+
+		Reader toml_reader = reader_from_files(toml_string);
 		printf("INFO: parsing '"str_fmt"' ...\n", str_arg(toml->as.string));
+
 		Value toml_value = value_object();
 		b8 read_toml = reader_read_toml_file(&toml_reader, &toml_value);
 
@@ -2669,7 +2689,15 @@ int main(void) {
 			} else {
 				if(read_toml) {
 					if(json->kind != KIND_STR) todo();
-					reader = reader_from_files(json->as.string);
+                    str json_string = json->as.string;
+
+                    u8 buf[PATH_MAX];
+                    memcpy(buf, base.data, base.len);
+                    memcpy(buf + base.len, json_string.data, json_string.len);
+
+                    json_string = (str) { buf, base.len + json_string.len };
+
+					reader = reader_from_files(json_string);
 					Value json_value;
 					if(!reader_read_json_value(&reader, &json_value)) {
 						todo();
